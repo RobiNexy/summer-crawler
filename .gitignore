@@ -1,0 +1,13 @@
+# Generated crawler output and runtime logs.
+python_version/src/*.json
+python_version/src/*.md
+python_version/logs/
+
+# Python and IDE artifacts.
+__pycache__/
+*.py[cod]
+.idea/
+python_version/src/.idea/
+
+# Local build output.
+summercrawler

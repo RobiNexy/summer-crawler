@@ -1,0 +1,20 @@
+meta {
+  name: 查看动态
+  type: http
+  seq: 2
+}
+
+get {
+  url: https://imsummer.cn/api/v9/user/activities?limit=20&offset=0
+  body: none
+  auth: inherit
+}
+
+params:query {
+  limit: 20
+  offset: 0
+}
+
+settings {
+  encodeUrl: true
+}
