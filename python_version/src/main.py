@@ -13,7 +13,9 @@ logging.basicConfig(
 
 client=RobustHTTPClient(5,3,20)
 
-auth_headers={"authorization":"aUkkLKuspKmAZAaYAj2sXmRL","user-agent":"okhttp/4.12.0","accept-encoding":"gzip"}
+import os
+
+auth_headers={"authorization":os.environ.get("SUMMER_AUTHORIZATION",""),"user-agent":"okhttp/4.12.0","accept-encoding":"gzip"}
 
 
 

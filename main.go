@@ -1,75 +1,274 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
+const defaultOutputDir = "summer_crawl_output"
+
+const (
+	requestDelayMin = 500 * time.Millisecond
+	requestDelayMax = 1500 * time.Millisecond
+)
+
 func main() {
-	baseURL := flag.String("base-url", defaultBaseURL, "API root URL")
-	authorization := flag.String("authorization", os.Getenv("SUMMER_AUTHORIZATION"), "authorization token; defaults to SUMMER_AUTHORIZATION")
-	outputDir := flag.String("output-dir", ".", "directory for JSON output")
-	friends := flag.Bool("friends", false, "also fetch friends and profiles")
-	limit := flag.Int("limit", 200, "activities per page")
-	flag.Parse()
-	if *authorization == "" {
-		log.Fatal("authorization is required: set SUMMER_AUTHORIZATION or pass -authorization")
+	if err := runCLI(os.Args[1:], os.Stdin, os.Stdout); err != nil {
+		log.Print(err)
+		os.Exit(1)
+	}
+}
+
+func runCLI(args []string, input io.Reader, output io.Writer) error {
+	if len(args) < 1 || strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("用法：./summer_crawl apikey [-output-dir 输出目录]")
+	}
+	authorization := args[0]
+	outputDir, sample, err := parseCLIOptions(args[1:])
+	if err != nil {
+		return err
 	}
 
-	client, err := NewHTTPClient(20*time.Second, 5, 3*time.Second, log.Default())
+	reader := bufio.NewReader(input)
+	keepBlackboard, err := askYesNo(reader, output, "是否保留黑板墙动态？", true)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	keepFriends, err := askYesNo(reader, output, "是否保留好友信息？", true)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(outputDir, 0o700); err != nil {
+		return fmt.Errorf("创建输出目录失败：%w", err)
+	}
+	capturedAt := time.Now().UTC()
+	client, err := NewHTTPClient(20*time.Second, 5, 3*time.Second, log.New(output, "", log.LstdFlags))
+	if err != nil {
+		return err
+	}
+	client.SetRandomDelay(requestDelayMin, requestDelayMax)
+	printer := newProgressPrinter(output)
 	crawler := &Crawler{
 		Client:        client,
-		BaseURL:       *baseURL,
-		ActivityLimit: *limit,
+		BaseURL:       activeBaseURL,
+		ActivityLimit: 200,
+		MaxActivities: sample,
+		Progress:      printer.step,
 		Headers: http.Header{
-			"Authorization":   []string{*authorization},
+			"Authorization":   []string{authorization},
 			"User-Agent":      []string{"okhttp/4.12.0"},
 			"Accept-Encoding": []string{"gzip"},
 		},
 	}
 
-	ctx := context.Background()
-	if err := os.MkdirAll(*outputDir, 0o700); err != nil {
-		log.Fatalf("create output directory: %v", err)
-	}
-	memories, err := crawler.FetchMemories(ctx)
+	fmt.Fprintln(output, "抓取个人资料……")
+	profile, err := crawler.FetchProfile(context.Background())
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-	if err := writeJSON(filepath.Join(*outputDir, "memories.json"), memories); err != nil {
-		log.Fatal(err)
+	fmt.Fprintln(output, "抓取黑板墙提问……")
+	questions, err := crawler.FetchQuestionBoards(context.Background())
+	if err != nil {
+		return err
 	}
-	log.Printf("saved %d activities", len(memories))
-
-	if *friends {
-		allFriends, err := crawler.FetchFriends(ctx)
+	if sample > 0 && len(questions) > sample {
+		questions = questions[:sample]
+	}
+	questions, err = crawler.EnrichQuestionBoards(context.Background(), questions)
+	printer.end()
+	if err != nil {
+		return err
+	}
+	var paper map[string]json.RawMessage
+	if paperID := rawString(profile, "paper_id"); paperID != "" {
+		fmt.Fprintln(output, "抓取交友问卷……")
+		paper, err = crawler.FetchPaper(context.Background(), paperID)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
-		if err := writeJSON(filepath.Join(*outputDir, "friends.json"), allFriends); err != nil {
-			log.Fatal(err)
+	}
+	fmt.Fprintln(output, "抓取动态……")
+	memories, err := crawler.FetchMemories(context.Background())
+	printer.end()
+	if err != nil {
+		return err
+	}
+	memories, err = crawler.EnrichMemories(context.Background(), memories)
+	printer.end()
+	if err != nil {
+		return err
+	}
+	friends := []map[string]json.RawMessage(nil)
+	if keepFriends {
+		fmt.Fprintln(output, "抓取好友列表……")
+		friends, err = crawler.FetchFriends(context.Background())
+		printer.end()
+		if err != nil {
+			return err
 		}
-		log.Printf("saved %d friends", len(allFriends))
+		fmt.Fprintln(output, "抓取好友详细资料……")
+		if err := crawler.EnrichFriendProfiles(context.Background(), friends); err != nil {
+			return err
+		}
+		printer.end()
+	}
+	fmt.Fprintln(output, "下载头像、图片和录音……")
+	if err := DownloadAlbumAssets(context.Background(), client, crawler.Headers, outputDir, printer.step, profile, questions, memories, friends); err != nil {
+		return err
+	}
+	printer.end()
+	if err := writeJSON(filepath.Join(outputDir, "profile.json"), profile); err != nil {
+		return err
+	}
+	if err := writeJSON(filepath.Join(outputDir, "capture.json"), map[string]string{"captured_at": capturedAt.Format(time.RFC3339)}); err != nil {
+		return err
+	}
+	if err := writeJSON(filepath.Join(outputDir, "question_boards.json"), questions); err != nil {
+		return err
+	}
+	if paper != nil {
+		if err := writeJSON(filepath.Join(outputDir, "paper.json"), paper); err != nil {
+			return err
+		}
+	}
+	if err := writeJSON(filepath.Join(outputDir, "memories.json"), memories); err != nil {
+		return err
+	}
+	if keepFriends {
+		if err := writeJSON(filepath.Join(outputDir, "friends.json"), friends); err != nil {
+			return err
+		}
+	}
+	blackboard, normal, refinedBlackboard, refinedNormal, err := CleanMemories(memories)
+	if err != nil {
+		return err
+	}
+	if err := writeJSON(filepath.Join(outputDir, "normal_memories.json"), normal); err != nil {
+		return err
+	}
+	if err := writeJSON(filepath.Join(outputDir, "refined_normal_memories.json"), refinedNormal); err != nil {
+		return err
+	}
+	if err := WriteMemoriesMarkdown(filepath.Join(outputDir, "memories_for_llm.md"), refinedNormal); err != nil {
+		return err
+	}
+	if !keepBlackboard {
+		blackboard = nil
+		refinedBlackboard = nil
+	} else {
+		if err := writeJSON(filepath.Join(outputDir, "blackboard_memories.json"), blackboard); err != nil {
+			return err
+		}
+		if err := writeJSON(filepath.Join(outputDir, "refined_blackboard_memories.json"), refinedBlackboard); err != nil {
+			return err
+		}
+	}
+
+	album, err := renderAlbum(profile, paper, questions, capturedAt.Format(time.RFC3339), refinedNormal, refinedBlackboard, friends, keepBlackboard, keepFriends)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(outputDir, "album.html"), album, 0o600); err != nil {
+		return fmt.Errorf("写入 HTML 相册失败：%w", err)
+	}
+	fmt.Fprintf(output, "完成：%d 条普通动态，%d 条黑板墙动态，输出目录：%s\n", len(normal), len(blackboard), outputDir)
+	return nil
+}
+
+func parseCLIOptions(args []string) (string, int, error) {
+	outputDir := defaultOutputDir
+	sample := 0
+	for index := 0; index < len(args); index++ {
+		switch args[index] {
+		case "-output-dir":
+			if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+				return "", 0, fmt.Errorf("-output-dir 后必须提供目录")
+			}
+			outputDir = args[index+1]
+			index++
+		case "-sample":
+			if index+1 >= len(args) {
+				return "", 0, fmt.Errorf("-sample 后必须提供正整数")
+			}
+			if _, err := fmt.Sscanf(args[index+1], "%d", &sample); err != nil || sample < 1 {
+				return "", 0, fmt.Errorf("-sample 后必须提供正整数")
+			}
+			index++
+		default:
+			return "", 0, fmt.Errorf("未知参数 %s；用法：./summer_crawl apikey [-sample 数量] [-output-dir 输出目录]", args[index])
+		}
+	}
+	return outputDir, sample, nil
+}
+
+func askYesNo(input *bufio.Reader, output io.Writer, question string, defaultValue bool) (bool, error) {
+	choice := "Y/n"
+	if !defaultValue {
+		choice = "y/N"
+	}
+	fmt.Fprintf(output, "%s [%s] ", question, choice)
+	line, err := input.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return false, fmt.Errorf("读取交互配置失败：%w", err)
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "y", "yes", "是":
+		return true, nil
+	case "n", "no", "否":
+		return false, nil
+	default:
+		return defaultValue, nil
 	}
 }
 
 func writeJSON(path string, value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode %s: %w", path, err)
+		return fmt.Errorf("编码文件 %s 失败：%w", path, err)
 	}
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+		return fmt.Errorf("写入文件 %s 失败：%w", path, err)
 	}
 	return nil
+}
+
+// progressPrinter 在终端中用单行滚动刷新进度；非终端输出时退化为逐行打印。
+type progressPrinter struct {
+	w     io.Writer
+	isTTY bool
+}
+
+func newProgressPrinter(w io.Writer) *progressPrinter {
+	printer := &progressPrinter{w: w}
+	if file, ok := w.(*os.File); ok {
+		if info, err := file.Stat(); err == nil && info.Mode()&os.ModeCharDevice != 0 {
+			printer.isTTY = true
+		}
+	}
+	return printer
+}
+
+func (p *progressPrinter) step(format string, args ...any) {
+	if p.isTTY {
+		fmt.Fprintf(p.w, "\r\033[K"+format, args...)
+		return
+	}
+	fmt.Fprintf(p.w, format+"\n", args...)
+}
+
+func (p *progressPrinter) end() {
+	if p.isTTY {
+		fmt.Fprint(p.w, "\r\033[K")
+	}
+	fmt.Fprintln(p.w)
 }

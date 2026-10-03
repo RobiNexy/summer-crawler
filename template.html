@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>十年 · 拍贴簿</title>
+<style>
+  :root {
+    --cream:  #fdf6e3;
+    --pink:   #ff8fc7;
+    --yellow: #ffd93d;
+    --blue:   #6ec6ff;
+    --purple: #b28dff;
+    --green:  #7ee787;
+    --red:    #e63b2e;
+    --indigo: #4a5fb5;       /* 已注销专用：靛蓝，远航之色，非灰 */
+    --ink:    #2a2a2a;
+    --paper:  #fffdf7;
+    --serif: "Songti SC", "Noto Serif SC", Georgia, serif;
+    --round: "Yuanti SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --mono: "SF Mono", Menlo, Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  [x-cloak] { display: none !important; }
+  html { scroll-behavior: smooth; }
+  .bg-stickers { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+  .bg-stickers span {
+    position: absolute; font-size: clamp(26px, 4vw, 44px); opacity: .15;
+    transform: rotate(var(--r, 0deg)); animation: floaty 7s ease-in-out infinite;
+    filter: drop-shadow(2px 2px 0 rgba(42,42,42,.2));
+  }
+  @keyframes floaty { 0%, 100% { translate: 0 0; } 50% { translate: 0 -14px; } }
+  body {
+    background-color: var(--cream);
+    background-image:
+      radial-gradient(circle, #e8dcbf 2px, transparent 2.5px),
+      repeating-linear-gradient(-45deg, transparent 0 90px, rgba(255,143,199,.07) 90px 180px);
+    background-size: 28px 28px, 100%;
+    color: var(--ink);
+    font-family: var(--round);
+    overflow-x: hidden;
+  }
+
+  /* ============================================================
+     ① 顶部导航：主入口双 Tab + 年份药丸条（吸顶）
+     ============================================================ */
+  .topnav {
+    position: sticky; top: 0; z-index: 60;
+    background: var(--ink);
+    border-bottom: 4px solid var(--ink);
+    box-shadow: 0 4px 0 rgba(42,42,42,.3);
+  }
+  .topnav-inner {
+    display: flex; align-items: center; gap: 8px;
+    max-width: 900px; margin: 0 auto; padding: 10px 16px;
+  }
+  .tab {
+    font-family: var(--mono); font-size: 14px; font-weight: 700;
+    color: var(--cream); text-decoration: none;
+    padding: 8px 18px; border: 2px solid var(--cream); border-radius: 999px;
+    transition: all .2s;
+  }
+  .tab:hover { background: rgba(255,255,255,.15); }
+  .tab.active { background: var(--yellow); color: var(--ink); border-color: var(--yellow);
+                box-shadow: 3px 3px 0 var(--pink); transform: rotate(-1deg); }
+  .divider { width: 2px; height: 26px; background: rgba(253,246,227,.3); margin: 0 4px; }
+  #yearNav { display: flex; gap: 6px; overflow-x: auto; flex: 1; scrollbar-width: none; }
+  #yearNav::-webkit-scrollbar { display: none; }
+  #yearNav a {
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    color: rgba(253,246,227,.65); text-decoration: none; white-space: nowrap;
+    padding: 6px 12px; border-radius: 999px; flex-shrink: 0;
+    transition: all .2s;
+  }
+  #yearNav a:hover { color: var(--cream); background: rgba(255,255,255,.12); }
+  #yearNav a.now {                                   /* 滚动自动点亮 */
+    background: var(--pink); color: var(--ink);
+    transform: scale(1.1); box-shadow: 2px 2px 0 var(--yellow);
+  }
+  #yearNav { display: none; }        /* 仅在动态页显示 */
+  body[data-page="feed"] #yearNav { display: flex; }
+
+  /* ============================================================
+     页首
+     ============================================================ */
+  header { text-align: center; padding: 56px 16px 24px; position: relative; }
+  h1 {
+    font-family: var(--serif); font-weight: 900;
+    font-size: clamp(56px, 11vw, 140px); line-height: 1;
+  }
+  h1 span { display: inline-block; animation: bob 2.4s ease-in-out infinite; }
+  h1 span:nth-child(odd)  { color: var(--pink);   -webkit-text-stroke: 3px var(--ink); }
+  h1 span:nth-child(even) { color: var(--yellow); -webkit-text-stroke: 3px var(--ink); text-shadow: 6px 6px 0 var(--purple); }
+  @keyframes bob {
+    0%, 100% { transform: translateY(0) rotate(-2deg); }
+    50%      { transform: translateY(-14px) rotate(2deg); }
+  }
+  .sub {
+    display: inline-block; background: var(--ink); color: var(--cream);
+    padding: 6px 22px; transform: rotate(-1.5deg); margin-top: 18px;
+    font-family: var(--mono); font-size: 13px; letter-spacing: .3em;
+  }
+  .badge {
+    position: absolute; top: 32px; right: 6%; width: 110px; height: 110px;
+    animation: spin 14s linear infinite;
+  }
+  .badge text { font-family: var(--mono); font-size: 11px; letter-spacing: .2em; fill: var(--ink); }
+  .badge circle { fill: var(--yellow); stroke: var(--ink); stroke-width: 2.5; stroke-dasharray: 6 5; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .marquee {
+    border-top: 3px solid var(--ink); border-bottom: 3px solid var(--ink);
+    background: repeating-linear-gradient(90deg,
+      var(--pink) 0 140px, var(--yellow) 140px 280px,
+      var(--blue) 280px 420px, var(--green) 420px 560px);
+    overflow: hidden; white-space: nowrap; padding: 8px 0;
+  }
+  .marquee span {
+    display: inline-block; font-family: var(--mono); font-size: 15px;
+    font-weight: 700; letter-spacing: .2em; color: var(--ink);
+    animation: slide 18s linear infinite;
+  }
+  @keyframes slide { to { transform: translateX(-50%); } }
+
+  /* ============================================================
+     页面容器：hash 路由切换
+     ============================================================ */
+  .page { display: none; }
+  .page.on { display: block; }
+  .year-page { display: none; }
+  .year-page.on { display: block; }
+
+  /* ---- 动态页：年份条 / 帖子卡片（沿用上一版全部样式） ---- */
+  .year {
+    position: relative; width: min(680px, 92%); margin: 64px auto 28px;
+    font-family: var(--serif); font-weight: 900;
+    font-size: clamp(44px, 7vw, 72px); text-align: center;
+    background: var(--purple); color: var(--cream);
+    padding: 10px 32px; transform: rotate(-1.2deg);
+    border: 3px solid var(--ink); box-shadow: 8px 8px 0 var(--ink);
+    scroll-margin-top: 90px;            /* 吸顶导航不遮标题 [工程共识] */
+  }
+  .year::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: -12px; height: 12px;
+    background:
+      linear-gradient(-45deg, transparent 8px, var(--purple) 0) 0 0 / 16px 100%,
+      linear-gradient(45deg,  transparent 8px, var(--purple) 0) 8px 0 / 16px 100%;
+    filter: drop-shadow(0 4px 0 rgba(0,0,0,.15));
+  }
+  .year::before {
+    content: "✦"; position: absolute; top: -22px; right: 10px; z-index: 1;
+    font-size: 30px; color: var(--yellow);
+    -webkit-text-stroke: 2px var(--ink);
+    transform: rotate(14deg);
+    filter: drop-shadow(2px 2px 0 rgba(42,42,42,.35));
+  }
+
+  .post { width: min(640px, 92%); margin: 0 auto 72px; position: relative; }
+  .post-grid { width: min(1360px, 94%); margin: 0 auto; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 34px 28px; align-items: start; }
+  .post-grid .post { width: auto; margin: 0 0 28px; }
+  .card {
+    background: var(--paper); border: 3px solid var(--ink);
+    box-shadow: 10px 10px 0 rgba(42,42,42,.85);
+    padding: 56px 32px 32px;
+    transform: rotate(var(--tilt, 0deg));
+    position: relative;
+    transition: transform .25s cubic-bezier(.34,1.56,.64,1);
+  }
+  .post:hover .card { transform: rotate(0deg) scale(1.015); }
+  .card::after {
+    content: ""; position: absolute; inset: 9px; pointer-events: none;
+    border: 1px dashed rgba(42,42,42,.28); border-radius: 2px;
+  }
+  .card::before {
+    content: ""; position: absolute; top: -18px; left: 50%;
+    width: 130px; height: 36px; transform: translateX(-50%) rotate(-3deg);
+    background: var(--tape, var(--pink)); opacity: .82;
+    border-left: 2px dashed rgba(255,255,255,.7);
+    border-right: 2px dashed rgba(255,255,255,.7);
+  }
+  .post:nth-of-type(4n+1) .card { --tape: var(--pink);   }
+  .post:nth-of-type(4n+2) .card { --tape: var(--blue);   }
+  .post:nth-of-type(4n+3) .card { --tape: var(--green);  }
+  .post:nth-of-type(4n+0) .card { --tape: var(--yellow); }
+  .date-tag {
+    position: absolute; top: 24px; right: -14px;
+    background: var(--ink); color: var(--cream);
+    font-family: var(--mono); font-size: 12px; font-weight: 700;
+    padding: 5px 14px; transform: rotate(3deg);
+    box-shadow: 4px 4px 0 var(--yellow); z-index: 3;
+  }
+  .text-body {
+    font-family: var(--serif); font-size: clamp(19px, 2.6vw, 26px);
+    line-height: 1.8; font-weight: 600;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .text-body mark { background: linear-gradient(transparent 55%, var(--yellow) 55%); color: inherit; }
+  .sticker-star {
+    position: absolute; bottom: -22px; left: -22px; width: 76px; height: 76px;
+    animation: wiggle 3s ease-in-out infinite;
+    filter: drop-shadow(3px 3px 0 rgba(42,42,42,.3));
+  }
+  @keyframes wiggle { 0%,100%{transform:rotate(-8deg)} 50%{transform:rotate(10deg)} }
+  .polaroid { padding: 14px 14px 52px; background: #fff; text-align: center; }
+  .polaroid img { width: 100%; display: block; aspect-ratio: 1/1; object-fit: cover; border: 2px solid var(--ink); }
+  .polaroid figcaption { font-size: 22px; font-weight: 700; margin-top: 12px; }
+  .wall { column-count: 2; column-gap: 14px; }
+  .wall figure {
+    break-inside: avoid; margin: 0 0 14px; padding: 8px;
+    background: #fff; border: 2px solid var(--ink);
+    box-shadow: 4px 4px 0 rgba(42,42,42,.6);
+    transform: rotate(var(--r, 0deg)); transition: transform .2s;
+  }
+  .wall figure:hover { transform: rotate(0) scale(1.04); z-index: 2; position: relative; }
+  .wall figure:nth-child(4n+1) { --r: -2.5deg; }
+  .wall figure:nth-child(4n+2) { --r:  2deg;   }
+  .wall figure:nth-child(4n+3) { --r: -1deg;   }
+  .wall figure:nth-child(4n+0) { --r:  1.5deg; }
+  .wall img { width: 100%; display: block; }
+  .gallery-caption {
+    margin-top: 20px; font-family: var(--serif); font-size: 18px; line-height: 1.7;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  .hifi {
+    border: 3px solid var(--ink); border-radius: 12px;
+    background: linear-gradient(180deg, #efe9dc, #ddd3c0);
+    box-shadow: 8px 8px 0 rgba(42,42,42,.8), inset 0 2px 0 #fff;
+    padding: 20px 22px;
+  }
+  .hifi-brand {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-family: var(--mono); font-size: 11px; letter-spacing: .2em;
+    border-bottom: 2px solid var(--ink); padding-bottom: 8px; margin-bottom: 14px;
+  }
+  .hifi-brand b { font-size: 15px; font-weight: 900; }
+  .hifi-main { display: grid; grid-template-columns: auto 1fr; gap: 20px; align-items: center; }
+  .lcd {
+    background: #1c2b1c; color: #8fff8f; font-family: var(--mono); font-weight: 700;
+    padding: 10px 14px; border-radius: 4px; border: 2px solid var(--ink);
+    box-shadow: inset 0 0 12px rgba(0,0,0,.6);
+    font-size: 26px; letter-spacing: .08em; font-variant-numeric: tabular-nums;
+    min-width: 130px; text-align: center;
+    text-shadow: 0 0 6px rgba(143,255,143,.7); margin-bottom: 10px;
+  }
+  .lcd .ampm { font-size: 11px; display: block; opacity: .7; letter-spacing: .3em; }
+  .eq { display: flex; gap: 4px; align-items: flex-end; height: 44px; }
+  .eq i { width: 7px; height: 6px; background: var(--ink); border-radius: 2px; opacity: .25; }
+  .playing .eq i {
+    opacity: 1; background: var(--pink);
+    animation: eq .8s ease-in-out infinite alternate;
+    box-shadow: 0 0 4px var(--pink);
+  }
+  .eq i:nth-child(2){animation-delay:.12s} .eq i:nth-child(3){animation-delay:.28s}
+  .eq i:nth-child(4){animation-delay:.06s} .eq i:nth-child(5){animation-delay:.34s}
+  .eq i:nth-child(6){animation-delay:.18s} .eq i:nth-child(7){animation-delay:.25s}
+  .eq i:nth-child(8){animation-delay:.10s}
+  @keyframes eq { from { height: 8px; } to { height: 40px; } }
+  .knob {
+    width: 84px; height: 84px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #fff, #c9c2b4 60%, #a89f8d);
+    border: 3px solid var(--ink); cursor: pointer;
+    box-shadow: 0 5px 0 rgba(42,42,42,.7);
+    display: grid; place-items: center;
+    font-family: var(--mono); font-size: 22px; font-weight: 900; color: var(--ink);
+    transition: transform .08s, box-shadow .08s;
+  }
+  .knob:active { transform: translateY(4px); box-shadow: 0 1px 0 rgba(42,42,42,.7); }
+  .hifi audio { width: 100%; height: 36px; margin-top: 16px; }
+  .hifi-note {
+    font-family: var(--serif); font-size: 16px; line-height: 1.7; margin-top: 12px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .comments { margin-top: 22px; border: 1px dashed #c9bda6; background: rgba(255,255,255,.55); border-radius: 6px; padding: 12px 14px 8px; font-family: var(--round); }
+  .comments-head { font-family: var(--mono); font-size: 12px; font-weight: 700; letter-spacing: .12em; margin-bottom: 10px; }
+  .comments-head span { color: #6b6560; font-weight: 400; }
+  .comment { display: flex; gap: 9px; padding: 7px 0; border-bottom: 1px solid #eee5d6; font-size: 13px; line-height: 1.5; }
+  .comment:last-child { border-bottom: 0; }
+  .comment img { width: 28px; height: 28px; border-radius: 50%; object-fit: cover; background: var(--cream); border: 1px solid var(--ink); flex: 0 0 auto; box-shadow: 1px 1px 0 rgba(42,42,42,.35); }
+  .comment > div { flex: 1; background: rgba(255,255,255,.75); border: 1px solid #e8ddc8; border-radius: 8px; padding: 6px 10px 7px; }
+  .comment b { font-size: 12px; }
+  .comment small { color: #777; }
+  .comment p { margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+  .comment time { color: #999; font-family: var(--mono); font-size: 10px; }
+
+  /* ============================================================
+     ② 朋友们：勋章墙
+     ============================================================ */
+  #friends { max-width: 1000px; margin: 0 auto; padding: 24px 16px 90px; }
+  .friends-head { text-align: center; margin: 40px 0 8px; }
+  .friends-head h2 {
+    font-family: var(--serif); font-weight: 900;
+    font-size: clamp(40px, 7vw, 72px); transform: rotate(-1deg);
+    display: inline-block;
+  }
+  .friends-head h2 em { font-style: normal; color: var(--pink);
+                        -webkit-text-stroke: 2px var(--ink); }
+  .friends-count {
+    display: inline-block; margin-top: 14px;
+    font-family: var(--mono); font-size: 13px; letter-spacing: .2em;
+    background: var(--ink); color: var(--cream); padding: 5px 18px;
+    transform: rotate(1deg);
+  }
+  .medal-wall {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 44px 20px; margin-top: 56px; padding: 0 8px;
+  }
+  .medal {
+    text-align: center; position: relative;
+    /* 依次弹入动画：真实渲染时用 index 注入 delay */
+    animation: pop .5s cubic-bezier(.34,1.56,.64,1) both;
+    animation-delay: var(--d, 0s);
+  }
+  @keyframes pop { from { transform: scale(0) rotate(-30deg); opacity: 0; } }
+  .medal:hover { transform: translateY(-6px); }
+  .medal { transition: transform .2s; }
+
+  /* 奖章主体：外圈糖色环 + 内凹头像窗 */
+  .medal-frame {
+    width: 118px; height: 118px; margin: 0 auto; position: relative;
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 32% 26%, rgba(255,255,255,.55), rgba(255,255,255,0) 42%),
+      var(--mc, var(--yellow));
+    border: 3px solid var(--ink);
+    box-shadow: 0 0 0 5px var(--paper), 0 0 0 7px var(--ink),
+                6px 8px 0 rgba(42,42,42,.35);
+    display: grid; place-items: center;
+  }
+  /* 内圈头像 */
+  .medal-frame::after {
+    content: ""; position: absolute; inset: 9px; border-radius: 50%;
+    background: var(--paper); border: 2px solid var(--ink); z-index: 0;
+  }
+  .medal-frame::before {
+    content: ""; position: absolute; inset: 6px; border-radius: 50%; z-index: 2;
+    pointer-events: none;
+    border: 2px dotted rgba(255,255,255,.85);
+    box-shadow: inset 0 0 0 2px rgba(42,42,42,.15);
+  }
+  .medal-avatar {
+    position: absolute; inset: 11px; width: calc(100% - 22px); height: calc(100% - 22px);
+    border-radius: 50%; object-fit: cover; z-index: 1;
+    box-shadow: inset 0 0 0 2px var(--ink), inset 0 -8px 14px rgba(42,42,42,.18);
+    background: var(--paper);
+  }
+
+  /* 绶带：燕尾双带 + 中心折角，藏在勋章后面 */
+  .ribbon {
+    width: 64px; height: 58px; margin: -24px auto 0; position: relative; z-index: -1;
+    filter: drop-shadow(2px 3px 0 rgba(42,42,42,.3));
+  }
+  .ribbon::before, .ribbon::after {
+    content: ""; position: absolute; top: 0; width: 28px; height: 100%;
+    background:
+      linear-gradient(rgba(255,255,255,.38), rgba(255,255,255,0) 46%),
+      linear-gradient(rgba(42,42,42,.14), rgba(42,42,42,0) 30%),
+      var(--mc, var(--yellow));
+    border: 2px solid var(--ink);
+  }
+  .ribbon::before {
+    left: 0; transform: skewY(-12deg); transform-origin: top left;
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 50% calc(100% - 13px), 0 100%);
+    border-radius: 4px 0 0 6px;
+  }
+  .ribbon::after {
+    right: 0; transform: skewY(12deg); transform-origin: top right;
+    clip-path: polygon(0 0, 100% 0, 100% 100%, 50% calc(100% - 13px), 0 100%);
+    border-radius: 0 4px 6px 0;
+  }
+  /* 绶带中心的三角折结 */
+  .ribbon i {
+    position: absolute; left: 50%; top: 32px; width: 14px; height: 14px;
+    transform: translateX(-50%) rotate(45deg);
+    background: var(--mc, var(--yellow));
+    border-left: 2px solid var(--ink); border-top: 2px solid var(--ink);
+  }
+
+  .medal-id {
+    font-family: var(--mono); font-size: 14px; font-weight: 700; margin-top: 8px;
+    word-break: break-all;
+  }
+  .medal-school {
+    font-size: 12px; color: #6b6560; margin-top: 2px;
+  }
+  .friend-days { margin-top: 4px; color: #777; font-family: var(--mono); font-size: 10px; }
+  .friend-hover { display: none; position: absolute; z-index: 10; left: 50%; top: 152px; width: 220px; transform: translateX(-50%); text-align: left; padding: 12px; background: var(--paper); border: 2px solid var(--ink); box-shadow: 5px 5px 0 var(--ink); font-size: 12px; line-height: 1.6; }
+  .friend-hover span { display: block; color: #615c57; }
+  .friend-hover p { margin-top: 5px; white-space: pre-wrap; word-break: break-word; }
+  .medal:hover .friend-hover { display: block; }
+
+  /* ---- 已注销勋章：靛蓝远航版，绝不灰色 ---- */
+  .medal.gone { --mc: var(--indigo); }
+  .medal.gone .medal-frame { box-shadow: 0 0 0 5px var(--paper), 0 0 0 7px var(--ink),
+                             0 0 24px rgba(74,95,181,.55);       /* 靛蓝辉光：夜航灯 */
+                             animation: glow 3s ease-in-out infinite; }
+  @keyframes glow {
+    0%,100% { box-shadow: 0 0 0 5px var(--paper), 0 0 0 7px var(--ink), 0 0 16px rgba(74,95,181,.4); }
+    50%     { box-shadow: 0 0 0 5px var(--paper), 0 0 0 7px var(--ink), 0 0 34px rgba(74,95,181,.75); }
+  }
+  .medal.gone .medal-id { color: var(--indigo); }
+  .gone-tag {
+    position: absolute; top: -6px; left: 50%; transform: translateX(-50%) rotate(-6deg);
+    background: var(--indigo); color: var(--cream);
+    font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: .15em;
+    padding: 3px 10px; border: 2px solid var(--ink); z-index: 2;
+    box-shadow: 2px 2px 0 var(--ink); white-space: nowrap;
+  }
+  /* 已注销头上一颗小星星：轻轻呼吸 */
+  .medal.gone .tiny-star {
+    position: absolute; top: -30px; right: 2px; font-size: 18px; color: var(--indigo);
+    animation: twinkle 2.2s ease-in-out infinite;
+    text-shadow: 0 0 8px rgba(74,95,181,.8);
+  }
+  @keyframes twinkle { 0%,100%{opacity:.35;transform:scale(.85)} 50%{opacity:1;transform:scale(1.15)} }
+
+  /* 图例说明条 */
+  .legend {
+    display: flex; justify-content: center; gap: 24px; flex-wrap: wrap;
+    margin-top: 56px; font-family: var(--mono); font-size: 12px;
+  }
+  .legend span { display: flex; align-items: center; gap: 8px; }
+  .dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--ink); }
+  .dot.a { background: var(--yellow); }
+  .dot.b { background: var(--indigo); box-shadow: 0 0 8px rgba(74,95,181,.6); }
+  .profile { max-width: 1000px; margin: 0 auto; padding: 54px 16px 100px; }
+  .profile-hero { display: grid; grid-template-columns: 180px 1fr; gap: 30px; align-items: center; }
+  .profile-photo { position: relative; width: 170px; justify-self: center; }
+  .profile-photo::before {
+    content: ""; position: absolute; top: -14px; left: 50%; z-index: 2;
+    transform: translateX(-50%) rotate(-4deg);
+    width: 92px; height: 26px; background: rgba(255,143,199,.82);
+    border-left: 2px dashed rgba(255,255,255,.75); border-right: 2px dashed rgba(255,255,255,.75);
+  }
+  .profile-avatar { width: 170px; height: 170px; object-fit: cover; border-radius: 50%; border: 4px solid var(--ink); box-shadow: 8px 8px 0 var(--pink); background: var(--cream); }
+  .profile-name { font-family: var(--serif); font-size: clamp(44px, 8vw, 82px); line-height: 1; }
+  .profile-id { font-family: var(--mono); margin-top: 12px; color: #69615b; }
+  .profile-bio { margin-top: 18px; font-family: var(--serif); font-size: 20px; line-height: 1.7; white-space: pre-wrap; }
+  .profile-facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+  .profile-fact, .profile-tag { border: 2px solid var(--ink); background: var(--yellow); padding: 5px 10px; font-family: var(--mono); font-size: 12px; box-shadow: 3px 3px 0 var(--ink); }
+  .profile-section { margin-top: 54px; }
+  .profile-section h3 { font-family: var(--serif); font-size: 34px; margin-bottom: 18px; position: relative; display: inline-block; z-index: 0; }
+  .profile-section h3::after {
+    content: ""; position: absolute; z-index: -1; left: -8px; right: -8px; bottom: 3px; height: 14px;
+    background: linear-gradient(transparent 0 15%, var(--yellow) 15% 82%, transparent 82%);
+    transform: rotate(-.6deg);
+  }
+  .tag-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .tag-group { background: var(--paper); border: 3px solid var(--ink); padding: 15px; box-shadow: 5px 5px 0 var(--blue); }
+  .tag-group b { font-family: var(--mono); font-size: 12px; }
+  .tag-group .profile-tag { display: inline-block; margin: 8px 5px 0 0; background: var(--cream); box-shadow: none; }
+  .question-list { display: grid; gap: 12px; }
+  .question-item { background: var(--paper); border-left: 7px solid var(--purple); padding: 14px 18px; font-family: var(--serif); font-size: 18px; line-height: 1.6; }
+  .question-item small { display: block; color: #777; font-family: var(--mono); font-size: 11px; }
+  .question-item summary { cursor: pointer; }
+  .question-images { display: flex; flex-wrap: wrap; gap: 10px; margin: 12px 0 4px; }
+  .question-images img {
+    width: 132px; background: #fff; border: 2px solid var(--ink);
+    box-shadow: 3px 3px 0 rgba(42,42,42,.35); transform: rotate(-1.6deg); padding: 3px;
+  }
+  .question-images img:nth-child(even) { transform: rotate(1.8deg); }
+  .answer-list { margin-top: 14px; border-top: 2px dashed #d9cfbf; }
+  .answer { padding: 10px 0; border-bottom: 1px solid #eee5d6; font-size: 15px; }
+  .answer p { margin-top: 3px; white-space: pre-wrap; }
+  .answer time { color: #999; font-family: var(--mono); font-size: 10px; }
+  .no-answer { margin-top: 12px; color: #888; font-size: 14px; }
+
+  footer {
+    padding: 40px 16px; background: var(--ink); color: var(--cream);
+    font-family: var(--mono); text-align: center; letter-spacing: .25em; font-size: 12px;
+  }
+
+  @media (max-width: 700px) {
+    .badge { display: none; }
+    .wall { column-count: 1; }
+    .hifi-main { grid-template-columns: 1fr; justify-items: center; }
+    .medal-wall { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 36px 14px; }
+    .topnav-inner { flex-wrap: wrap; }
+    .post-grid { grid-template-columns: 1fr; width: 92%; }
+    .profile-hero { grid-template-columns: 1fr; text-align: center; justify-items: center; }
+    .profile-facts { justify-content: center; }
+    .tag-groups { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 背景贴纸装饰层：纯装饰，不响应指针 -->
+<div class="bg-stickers" aria-hidden="true">
+  <span style="top:7%;left:4%;--r:-12deg;animation-delay:0s">📼</span>
+  <span style="top:15%;right:5%;--r:9deg;animation-delay:1.2s">☁️</span>
+  <span style="top:36%;left:2%;--r:6deg;animation-delay:.6s">🎧</span>
+  <span style="top:50%;right:3%;--r:-8deg;animation-delay:1.8s">⭐</span>
+  <span style="top:66%;left:4%;--r:11deg;animation-delay:.9s">🌻</span>
+  <span style="top:78%;right:7%;--r:-6deg;animation-delay:.3s">📻</span>
+  <span style="top:88%;left:12%;--r:14deg;animation-delay:1.5s">🧃</span>
+  <span style="top:26%;left:44%;--r:-4deg;animation-delay:2.1s">✈️</span>
+  <span style="top:60%;left:56%;--r:5deg;animation-delay:2.4s">📷</span>
+  <span style="top:9%;left:62%;--r:-10deg;animation-delay:2.7s">🩹</span>
+</div>
+
+<!-- ============ 顶部导航 ============ -->
+<nav class="topnav">
+  <div class="topnav-inner">
+   <a class="tab" href="#feed" data-tab="feed">📼 动态</a>
+   <a class="tab" href="#friends" data-tab="friends">🎖 朋友们</a>
+   <a class="tab" href="#me" data-tab="me">🪪 我</a>
+    <div class="divider"></div>
+    <nav id="yearNav">
+    </nav>
+  </div>
+</nav>
+
+<!-- ============================================================ -->
+<!-- 页一：动态                                                    -->
+<!-- ============================================================ -->
+<main class="page" id="feed">
+
+<header>
+  <h1>
+    <span style="animation-delay:0s">那</span><span style="animation-delay:.12s">年</span><span style="animation-delay:.24s">夏</span><span style="animation-delay:.36s">天</span><span style="animation-delay:.48s">回</span><span style="animation-delay:.6s">忆</span><span style="animation-delay:.72s">录</span>
+  </h1>
+  <div class="sub">SUMMER MEMORIES · 私人存档</div>
+  <svg class="badge" viewBox="0 0 110 110" aria-hidden="true">
+    <circle cx="55" cy="55" r="50"/>
+    <path id="circlePath" d="M55,55 m-36,0 a36,36 0 1,1 72,0 a36,36 0 1,1 -72,0" fill="none"/>
+    <text><textPath href="#circlePath">KEEP · THIS · MEMORY · FOREVER · KEEP · THIS · MEMORY ·</textPath></text>
+  </svg>
+</header>
+
+<div class="marquee">
+  <span>★ 那年夏天回忆录 ★ SUMMER MEMORIES ★ 一页一页翻过去 ★ 那年夏天回忆录 ★ SUMMER MEMORIES ★ 一页一页翻过去 ★&nbsp;</span>
+  <span>★ 那年夏天回忆录 ★ SUMMER MEMORIES ★ 一页一页翻过去 ★ 那年夏天回忆录 ★ SUMMER MEMORIES ★ 一页一页翻过去 ★&nbsp;</span>
+</div>
+
+  <!-- FEED_START -->
+  <div class="year" id="y2015" data-year="2015">2 0 1 5</div>
+
+<div class="post" data-year="2015" style="--tilt:-1deg">
+  <div class="card">
+    <span class="date-tag">2015.03.08</span>
+    <p class="text-body">深夜下班路过便利店，店员在打烊前把最后一个饭团留给了我。这城市偶尔也对我好一下。
+【占位：文字帖正文，换行保留；&lt;mark&gt; 包住句子获得荧光笔高亮。】</p>
+    <svg class="sticker-star" viewBox="0 0 100 100" aria-hidden="true">
+      <path d="M50 5 L61 38 L97 38 L68 59 L79 93 L50 72 L21 93 L32 59 L3 38 L39 38 Z"
+            fill="var(--yellow)" stroke="var(--ink)" stroke-width="3"/>
+    </svg>
+  </div>
+</div>
+
+<div class="post" data-year="2016" style="--tilt:1.4deg">
+  <div class="card">
+    <span class="date-tag">2016.07.12</span>
+    <figure class="polaroid">
+      <img src="assets/img/p2_1.jpg" alt="占位图"
+           style="background:repeating-linear-gradient(45deg,var(--pink) 0 24px,var(--cream) 24px 48px)">
+      <figcaption>海边第七天</figcaption>
+    </figure>
+  </div>
+</div>
+
+<div class="year" id="y2018" data-year="2018">2 0 1 8</div>
+
+<div class="post" data-year="2018" style="--tilt:-1.2deg">
+  <div class="card">
+    <span class="date-tag">2018.10.01</span>
+    <div class="wall">
+      <figure><img src="assets/img/p3_1.jpg" alt="1" style="height:190px;object-fit:cover;background:repeating-linear-gradient(45deg,#ddd 0 20px,#eee 20px 40px)"></figure>
+      <figure><img src="assets/img/p3_2.jpg" alt="2" style="height:260px;object-fit:cover;background:repeating-linear-gradient(-45deg,#ddd 0 20px,#eee 20px 40px)"></figure>
+      <figure><img src="assets/img/p3_3.jpg" alt="3" style="height:150px;object-fit:cover;background:repeating-linear-gradient(45deg,#ccc 0 20px,#ddd 20px 40px)"></figure>
+      <figure><img src="assets/img/p3_4.jpg" alt="4" style="height:220px;object-fit:cover;background:repeating-linear-gradient(-45deg,#ccc 0 20px,#ddd 20px 40px)"></figure>
+      <figure><img src="assets/img/p3_5.jpg" alt="5" style="height:180px;object-fit:cover;background:repeating-linear-gradient(45deg,#ddd 0 20px,#eee 20px 40px)"></figure>
+      <figure><img src="assets/img/p3_6.jpg" alt="6" style="height:240px;object-fit:cover;background:repeating-linear-gradient(-45deg,#ddd 0 20px,#eee 20px 40px)"></figure>
+    </div>
+    <p class="gallery-caption">【占位：多图帖配文。真实图片去掉 height/object-fit，保留原始比例。】</p>
+  </div>
+</div>
+
+<div class="post" data-year="2020" style="--tilt:0.8deg">
+  <div class="card">
+    <span class="date-tag">2020.12.24</span>
+     <div class="hifi" x-data="audioPlayer()" :class="{ playing }">
+      <div class="hifi-brand"><b>SOUND-O-MATIC</b><span>STEREO · 2CH</span></div>
+      <div class="hifi-main">
+      <button class="knob" aria-label="播放或暂停" @click="toggle()" x-text="playing ? '❚❚' : '▶'"></button>
+        <div>
+           <div class="lcd"><span class="ampm" x-text="label"></span><span class="t" x-text="current"></span></div>
+           <div class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+      </div>
+       <audio x-ref="audio" preload="metadata" src="assets/audio/p4_1.mp3" @play="onPlay" @pause="onPause" @timeupdate="updateTime" @loadedmetadata="ready"></audio>
+      <p class="hifi-note">【占位：录音配文。点旋钮播放，EQ 跳动、LCD 走秒。】</p>
+    </div>
+  </div>
+</div>
+
+<div class="year" id="y2024" data-year="2024">2 0 2 4</div>
+
+<div class="post" data-year="2024" style="--tilt:-0.6deg">
+  <div class="card">
+    <span class="date-tag">2024.06.18</span>
+    <p class="text-body">平台要关了。<mark>幸好，都搬出来了。</mark></p>
+  </div>
+</div>
+
+  <!-- FEED_END -->
+</main>
+
+<main class="page" id="me">
+  <!-- PROFILE_START -->
+  <section class="profile"><h1>个人资料</h1></section>
+  <!-- PROFILE_END -->
+</main>
+
+<!-- ============================================================ -->
+<!-- 页二：朋友们 · 勋章墙                                         -->
+<!--                                                               -->
+<!-- 渲染约定（给爬虫脚本）：
+<div class="medal" style="--d:0.06s">            ← --d = index*0.04s 弹入延迟
+  <div class="medal-frame" style="--avatar:url(assets/avatars/u1.jpg);
+       --mc:var(--yellow)"></div>                 ← 外圈色在糖果色中轮换
+  <div class="ribbon"></div>
+  <div class="medal-id">小王爱吃鱼</div>
+  <div class="medal-school">某某大学 · 2016 级</div>
+</div>
+已注销：加 class="gone"，可加 <span class="gone-tag">已注销</span>
+真实头像：--avatar:url(...) 覆盖占位渐变，图片裁圆用 CSS 即可。
+-->
+<!-- ============================================================ -->
+<main class="page" id="friends">
+
+  <div class="friends-head">
+    <h2>朋友<em>勋章墙</em></h2><br>
+     <span class="friends-count" id="friendCount">共 0 位 · 其中 0 位已远航</span>
+  </div>
+
+   <div class="medal-wall">
+    <!-- FRIENDS_START -->
+
+    <template x-for="(friend, index) in friends" :key="friend.name">
+      <div class="medal" :class="{ gone: friend.gone }" :style="`--d:${index * .04}s;--mc:${friend.color}`">
+        <template x-if="friend.gone"><span class="gone-tag">已注销</span></template>
+        <template x-if="friend.gone"><span class="tiny-star">✦</span></template>
+        <div class="medal-frame" :style="`--avatar:${friend.avatar}`"></div>
+        <div class="ribbon"></div>
+        <div class="medal-id" x-text="friend.name"></div>
+        <div class="medal-school" x-text="friend.school"></div>
+     </template>
+    <!-- FRIENDS_END -->
+   </div>
+
+  <div class="legend">
+    <span><i class="dot a"></i>仍在册 · 勋章常亮</span>
+    <span><i class="dot b"></i>已注销 · 已远航，星光照旧</span>
+  </div>
+
+</main>
+
+<footer>SUMMER MEMORIES · 私人回忆存档 · ✦</footer>
+
+<div class="lightbox" style="display:none;position:fixed;inset:0;background:rgba(20,18,15,.92);z-index:100;cursor:zoom-out;align-items:center;justify-content:center">
+  <img :src="lightbox" alt="放大图片" style="max-width:94vw;max-height:94vh;box-shadow:0 0 0 4px var(--yellow)">
+</div>
+<script type="text/plain">
+  document.addEventListener('alpine:init', () => {
+    Alpine.data('audioPlayer', () => ({
+      playing: false, current: '00:00', label: 'READY',
+      fmt(seconds) { return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}` },
+      toggle() { this.$refs.audio.paused ? this.$refs.audio.play() : this.$refs.audio.pause() },
+      onPlay() { this.playing = true; this.label = 'ON AIR' },
+      onPause() { this.playing = false; this.label = this.$refs.audio.ended ? 'END' : 'PAUSE' },
+      updateTime() { this.current = this.fmt(this.$refs.audio.currentTime) },
+      ready() { this.label = `READY ${this.fmt(this.$refs.audio.duration)}` }
+    }))
+  })
+
+  function archiveApp() {
+    return {
+      page: 'feed', activeYear: '2015', lightbox: null,
+      years: ['2015', '2016', '2018', '2020', '2024'],
+      friends: [
+        { name: '小王爱吃鱼', school: '海洋大学 · 2015 级', color: 'var(--yellow)', gone: false, avatar: 'repeating-linear-gradient(45deg,var(--blue) 0 12px,var(--cream) 12px 24px)' },
+        { name: '阿树不落叶', school: '林业大学 · 2016 级', color: 'var(--pink)', gone: false, avatar: 'repeating-linear-gradient(45deg,var(--green) 0 12px,var(--cream) 12px 24px)' },
+        { name: '深夜电台DJ', school: '传媒大学 · 2014 级', color: 'var(--indigo)', gone: true, avatar: 'repeating-linear-gradient(45deg,var(--indigo) 0 12px,var(--cream) 12px 24px)' },
+        { name: 'momo_1128', school: '外国语学院 · 2017 级', color: 'var(--blue)', gone: false, avatar: 'repeating-linear-gradient(45deg,var(--pink) 0 12px,var(--cream) 12px 24px)' },
+        { name: '大熊不做梦', school: '工业大学 · 2015 级', color: 'var(--green)', gone: false, avatar: 'repeating-linear-gradient(45deg,var(--yellow) 0 12px,var(--cream) 12px 24px)' },
+        { name: '晚风十点半', school: '师范大学 · 2013 级', color: 'var(--indigo)', gone: true, avatar: 'repeating-linear-gradient(45deg,var(--indigo) 0 12px,var(--cream) 12px 24px)' }
+      ],
+      get goneCount() { return this.friends.filter(friend => friend.gone).length },
+      init() {
+        this.page = location.hash.slice(1) === 'friends' ? 'friends' : 'feed'
+        window.addEventListener('hashchange', () => { this.page = location.hash.slice(1) === 'friends' ? 'friends' : 'feed'; window.scrollTo(0, 0) })
+        const observer = new IntersectionObserver(entries => entries.forEach(entry => { if (entry.isIntersecting) this.activeYear = entry.target.dataset.year }), { rootMargin: '-40% 0px -55% 0px' })
+        document.querySelectorAll('.year').forEach(year => observer.observe(year))
+        document.addEventListener('click', event => { if (event.target.matches('.wall img, .polaroid img')) this.lightbox = event.target.src })
+      }
+    }
+  }
+</script>
+<script>
+  document.querySelectorAll('.page').forEach(page => page.classList.remove('on'))
+  const yearLinks = document.querySelector('#yearNav')
+  const yearPages = [...document.querySelectorAll('.year-page')]
+  yearLinks.innerHTML = yearPages.map(page => `<a href="#year-${page.dataset.yearPage}" data-y="${page.dataset.yearPage}">${page.dataset.yearPage}</a>`).join('')
+  const route = () => {
+    const hash = location.hash.slice(1)
+    const page = ['friends', 'me'].includes(hash) ? hash : 'feed'
+    const activeYear = hash.startsWith('year-') ? hash.slice(5) : (yearPages[0]?.dataset.yearPage || '')
+    document.body.dataset.page = page
+    document.querySelectorAll('.page').forEach(item => item.classList.toggle('on', item.id === page))
+    document.querySelectorAll('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === page))
+    yearPages.forEach(item => item.classList.toggle('on', page === 'feed' && item.dataset.yearPage === activeYear))
+    yearLinks.querySelectorAll('a').forEach(link => link.classList.toggle('now', link.dataset.y === activeYear))
+    if (page !== 'feed' || hash.startsWith('year-') || hash === 'feed') window.scrollTo(0, 0)
+  }
+  window.addEventListener('hashchange', route)
+  route()
+
+  document.querySelectorAll('.hifi').forEach(hifi => {
+    const audio = hifi.querySelector('audio'), knob = hifi.querySelector('.knob')
+    const time = hifi.querySelector('.lcd .t'), label = hifi.querySelector('.lcd .ampm')
+    const format = value => `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(Math.floor(value % 60)).padStart(2, '0')}`
+    if (knob) knob.addEventListener('click', () => audio.paused ? audio.play() : audio.pause())
+    audio.addEventListener('play', () => { hifi.classList.add('playing'); if (knob) knob.textContent = '❚❚'; if (label) label.textContent = 'ON AIR' })
+    audio.addEventListener('pause', () => { hifi.classList.remove('playing'); if (knob) knob.textContent = '▶'; if (label) label.textContent = audio.ended ? 'END' : 'PAUSE' })
+    if (time) audio.addEventListener('timeupdate', () => { time.textContent = format(audio.currentTime) })
+    if (label) audio.addEventListener('loadedmetadata', () => { label.textContent = `READY ${format(audio.duration)}` })
+  })
+
+  document.querySelectorAll('[data-friend-days]').forEach(item => {
+    const base = Number(item.dataset.friendDays || 0), captured = Date.parse(item.dataset.capturedAt)
+    if (!Number.isNaN(captured)) item.querySelector('.friend-days span').textContent = Math.max(0, base + Math.floor((Date.now() - captured) / 86400000))
+  })
+
+  const lightbox = document.querySelector('.lightbox')
+  const lightboxImage = lightbox.querySelector('img')
+  document.addEventListener('click', event => {
+    if (event.target.matches('.wall img, .polaroid img')) {
+      lightboxImage.src = event.target.src
+      lightbox.style.display = 'flex'
+    } else if (event.target === lightbox) {
+      lightbox.style.display = 'none'
+    }
+  })
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') lightbox.style.display = 'none' })
+</script>
+</body>
+</html>

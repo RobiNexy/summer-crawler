@@ -1,13 +1,39 @@
-# Summer Crawler
+# Summer 爬虫
 
-Go implementation of the crawler in `python_version`.
+用于抓取 Summer 平台动态及好友资料的 Go 命令行工具。
 
-The authorization token is deliberately not embedded in source code. Run it with:
+授权令牌不会写入源代码。编译并运行：
 
 ```bash
-export SUMMER_AUTHORIZATION='your-token'
-go run . -output-dir ./data
+go build -o summer_crawl .
+./summer_crawl 'your-api-key'
 ```
 
-Use `-friends` to additionally write `friends.json`. Other useful options are
-`-base-url` for a test server and `-limit` for the activity page size.
+本次只抓少量动态进行试跑：
+
+```bash
+./summer_crawl 'your-api-key' -sample 3
+```
+
+启动后会交互询问是否保留黑板墙动态和好友信息。默认输出到 `summer_crawl_output/`，也可以指定目录：
+
+```bash
+./summer_crawl 'your-api-key' -output-dir ./data
+```
+
+程序会生成动态清洗结果：
+
+- `memories.json`：全部原始动态。
+- `normal_memories.json`：普通动态。
+- `refined_normal_memories.json`：提炼后的标题、正文、图片、时间及结构化外链。
+- `memories_for_llm.md`：普通动态的时间和正文 Markdown 汇总。
+- `blackboard_memories.json`、`refined_blackboard_memories.json`：选择保留黑板墙时生成。
+- `friends.json`：选择保留好友信息时生成。
+- `profile.json`：个人资料。
+- `paper.json`：个人交友问卷。
+- `question_boards.json`：自己发布过的黑板墙问题及回答。
+- `album.html`：可直接打开的离线 HTML 相册。
+
+相册包含年份导航、两列动态卡片、图片灯箱、评论区、录音播放器、好友勋章墙和个人资料页。下载的资源位于 `assets/images/avatar/`、`assets/images/memories/` 和 `assets/audio/`，不依赖网络加载 JavaScript 框架。
+
+所有 API 请求和资源下载之间会加入 0.5 至 1.5 秒随机等待；失败重试仍会遵守等待策略。

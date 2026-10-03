@@ -3,6 +3,15 @@ python_version/src/*.json
 python_version/src/*.md
 python_version/logs/
 
+# Crawler products: binaries, generated albums and downloaded media.
+summer_crawl
+summercrawler
+*_output/
+python_preview/
+
+# Packet captures (contain auth tokens and private data).
+API/
+
 # Python and IDE artifacts.
 __pycache__/
 *.py[cod]
