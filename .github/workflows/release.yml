@@ -58,7 +58,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: summer_crawl_*.*
+          path: |
+            summer_crawl_*.tar.gz
+            summer_crawl_*.zip
 
   release:
     name: Publish release
@@ -77,6 +79,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${{ inputs.tag || github.ref_name }}"
-          gh release create "${version}" dist/* \
-            --title "${version}" \
-            --generate-notes
+          if gh release view "${version}" >/dev/null 2>&1; then
+            gh release upload "${version}" dist/* --clobber
+          else
+            gh release create "${version}" dist/* \
+              --title "${version}" \
+              --generate-notes
+          fi
