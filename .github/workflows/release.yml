@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64, archive: tar.gz }
+          - { goos: linux,   goarch: arm64, archive: tar.gz }
+          - { goos: darwin,  goarch: amd64, archive: tar.gz }
+          - { goos: darwin,  goarch: arm64, archive: tar.gz }
+          - { goos: windows, goarch: amd64, archive: zip }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          name="summer_crawl"
+          if [[ "${{ matrix.goos }}" == "windows" ]]; then
+            name="summer_crawl.exe"
+          fi
+          dir="summer_crawl_${version}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p "${dir}"
+          GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" CGO_ENABLED=0 \
+            go build -trimpath -ldflags "-s -w" -o "${dir}/${name}" .
+          # 模板已通过 go:embed 打进二进制，这里附带一份便于查看和自定义。
+          cp README.md LICENSE template.html "${dir}/"
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            zip -qr "${dir}.zip" "${dir}"
+          else
+            tar -czf "${dir}.tar.gz" "${dir}"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: summer_crawl_*.*
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes

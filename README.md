@@ -9,6 +9,8 @@ go build -o summer_crawl .
 ./summer_crawl 'your-api-key'
 ```
 
+也可以直接从 [Releases](../../releases) 下载对应平台的压缩包（Linux / macOS / Windows，含二进制、模板和说明文档），解压后运行其中的 `summer_crawl`（Windows 为 `summer_crawl.exe`）。
+
 本次只抓少量动态进行试跑：
 
 ```bash
