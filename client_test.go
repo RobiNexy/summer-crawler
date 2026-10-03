@@ -68,6 +68,10 @@ func TestCrawlerFetchFriendsAddsProfiles(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/user/friends":
+			if r.URL.Query().Get("offset") != "0" {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
 			_, _ = w.Write([]byte(`[{"id":"42","nickname":"Ada","gender":2,"friend_days":10}]`))
 		case "/users/42":
 			_, _ = w.Write([]byte(`{"id":"42","nickname":"Ada","status":"normal"}`))
@@ -89,7 +93,7 @@ func TestCrawlerFetchFriendsAddsProfiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := crawler.EnrichFriendProfiles(context.Background(), friends); err != nil {
+	if err := crawler.EnrichFriendProfiles(context.Background(), friends, 2); err != nil {
 		t.Fatal(err)
 	}
 	if len(friends) != 1 || string(friends[0]["nickname"]) != `"Ada"` {

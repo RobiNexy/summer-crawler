@@ -10,15 +10,34 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
+// assetJob 描述一个待下载的远程资源；相同 URL 只下载一次。
+type assetJob struct {
+	remoteURL string
+	directory string
+	prefix    string
+	relative  string
+}
+
+// pendingApply 在下载完成后把本地路径写回数据结构。
+type pendingApply struct {
+	job   *assetJob
+	apply func(relative string)
+}
+
 type assetStore struct {
-	client    *HTTPClient
-	headers   http.Header
-	root      string
-	cache     map[string]string
-	downloads int
-	progress  func(format string, args ...any)
+	client     *HTTPClient
+	headers    http.Header
+	root       string
+	progress   func(format string, args ...any)
+	jobs       []*assetJob
+	index      map[string]*assetJob
+	applies    []pendingApply
+	finalizers []func()
+	downloaded atomic.Int64
 }
 
 func (s *assetStore) progressf(format string, args ...any) {
@@ -27,51 +46,76 @@ func (s *assetStore) progressf(format string, args ...any) {
 	}
 }
 
-// DownloadAlbumAssets 下载相册依赖的远程资源，并把 JSON 中的地址替换为相对路径。
-// progress 为可选回调，用于进度展示。
-func DownloadAlbumAssets(ctx context.Context, client *HTTPClient, headers http.Header, root string, progress func(string, ...any), profile map[string]json.RawMessage, questions []json.RawMessage, memories []json.RawMessage, friends []map[string]json.RawMessage) error {
-	store := &assetStore{client: client, headers: headers, root: root, cache: make(map[string]string), progress: progress}
-	if err := store.profile(ctx, profile); err != nil {
-		return err
+// DownloadAlbumAssets 并行下载相册依赖的远程资源，并把 JSON 中的地址替换为相对路径。
+// concurrency 限制同时下载的数量；progress 为可选进度回调。
+func DownloadAlbumAssets(ctx context.Context, client *HTTPClient, headers http.Header, root string, progress func(string, ...any), concurrency int, profile map[string]json.RawMessage, questions []json.RawMessage, memories []json.RawMessage, friends []map[string]json.RawMessage) error {
+	store := &assetStore{
+		client:   client,
+		headers:  headers,
+		root:     root,
+		progress: progress,
+		index:    make(map[string]*assetJob),
 	}
+	store.collectProfile(profile)
 	for index, rawQuestion := range questions {
 		var question map[string]json.RawMessage
 		if err := json.Unmarshal(rawQuestion, &question); err != nil {
 			return fmt.Errorf("解析第 %d 个黑板墙问题资源失败：%w", index, err)
 		}
-		if err := store.questionMedia(ctx, question, index); err != nil {
-			return err
+		var savers []func()
+		if save := store.collectMedia(question["images"], filepath.Join("assets", "images", "questions"), fmt.Sprintf("question-%d", index)); save != nil {
+			savers = append(savers, func() { question["images"] = save() })
 		}
-		encoded, err := json.Marshal(question)
-		if err != nil {
-			return fmt.Errorf("编码第 %d 个黑板墙问题资源失败：%w", index, err)
+		var answers []map[string]json.RawMessage
+		if json.Unmarshal(question["answers"], &answers) == nil {
+			var answerSavers []func()
+			for answerIndex, answer := range answers {
+				prefix := fmt.Sprintf("question-%d-answer-%d", index, answerIndex)
+				if save := store.collectMedia(answer["images"], filepath.Join("assets", "images", "questions"), prefix); save != nil {
+					target := answer
+					answerSavers = append(answerSavers, func() { target["images"] = save() })
+				}
+			}
+			if len(answerSavers) > 0 {
+				savers = append(savers, func() {
+					for _, save := range answerSavers {
+						save()
+					}
+					question["answers"], _ = json.Marshal(answers)
+				})
+			}
 		}
-		questions[index] = encoded
+		if len(savers) > 0 {
+			captured := question
+			store.finalizers = append(store.finalizers, func() {
+				for _, save := range savers {
+					save()
+				}
+				questions[index], _ = json.Marshal(captured)
+			})
+		}
 	}
 	for index, rawMemory := range memories {
 		var memory map[string]json.RawMessage
 		if err := json.Unmarshal(rawMemory, &memory); err != nil {
 			return fmt.Errorf("解析第 %d 条动态资源失败：%w", index, err)
 		}
-		media, err := store.mediaList(ctx, memory["images"], filepath.Join("assets", "images", "memories"), fmt.Sprintf("memory-%d", index))
-		if err != nil {
-			return err
+		var savers []func()
+		if save := store.collectMedia(memory["images"], filepath.Join("assets", "images", "memories"), fmt.Sprintf("memory-%d", index)); save != nil {
+			savers = append(savers, func() { memory["images"] = save() })
 		}
-		if media != nil {
-			memory["images"] = media
+		if save := store.collectComments(memory["comments"]); save != nil {
+			savers = append(savers, func() { memory["comments"] = save() })
 		}
-		comments, err := store.comments(ctx, memory["comments"], index)
-		if err != nil {
-			return err
+		if len(savers) > 0 {
+			captured := memory
+			store.finalizers = append(store.finalizers, func() {
+				for _, save := range savers {
+					save()
+				}
+				memories[index], _ = json.Marshal(captured)
+			})
 		}
-		if comments != nil {
-			memory["comments"] = comments
-		}
-		encoded, err := json.Marshal(memory)
-		if err != nil {
-			return fmt.Errorf("编码第 %d 条动态资源失败：%w", index, err)
-		}
-		memories[index] = encoded
 	}
 	for index, friend := range friends {
 		info := rawObject(friend["info"])
@@ -79,157 +123,224 @@ func DownloadAlbumAssets(ctx context.Context, client *HTTPClient, headers http.H
 		if directProfile {
 			info = friend
 		}
-		if err := store.profile(ctx, info); err != nil {
-			return fmt.Errorf("下载第 %d 位好友头像失败：%w", index, err)
+		if !store.collectProfileFields(info) {
+			continue
 		}
-		if directProfile {
-			friends[index] = info
-		} else {
-			friend["info"], _ = json.Marshal(info)
-		}
-		encoded, err := json.Marshal(friend)
-		if err != nil {
-			return fmt.Errorf("编码第 %d 位好友资源失败：%w", index, err)
-		}
-		friends[index] = mapRaw(encoded)
+		friendMap := friend
+		store.finalizers = append(store.finalizers, func() {
+			if directProfile {
+				friends[index] = info
+				return
+			}
+			friendMap["info"], _ = json.Marshal(info)
+			encoded, err := json.Marshal(friendMap)
+			if err == nil {
+				friends[index] = mapRaw(encoded)
+			}
+		})
+	}
+
+	if err := store.downloadAll(ctx, concurrency); err != nil {
+		return err
+	}
+	for _, pending := range store.applies {
+		pending.apply(pending.job.relative)
+	}
+	for _, finalize := range store.finalizers {
+		finalize()
 	}
 	return nil
 }
 
-// questionMedia 下载黑板墙问题及其回答的配图。
-func (s *assetStore) questionMedia(ctx context.Context, question map[string]json.RawMessage, index int) error {
-	media, err := s.mediaList(ctx, question["images"], filepath.Join("assets", "images", "questions"), fmt.Sprintf("question-%d", index))
-	if err != nil {
-		return fmt.Errorf("下载第 %d 个黑板墙问题配图失败：%w", index, err)
+func (s *assetStore) addJob(remoteURL, directory, prefix string) *assetJob {
+	if job, ok := s.index[remoteURL]; ok {
+		return job
 	}
-	if media != nil {
-		question["images"] = media
-	}
-	var answers []map[string]json.RawMessage
-	if json.Unmarshal(question["answers"], &answers) != nil {
-		return nil
-	}
-	for answerIndex, answer := range answers {
-		media, err := s.mediaList(ctx, answer["images"], filepath.Join("assets", "images", "questions"), fmt.Sprintf("question-%d-answer-%d", index, answerIndex))
-		if err != nil {
-			return fmt.Errorf("下载第 %d 个黑板墙问题的回答配图失败：%w", index, err)
-		}
-		if media != nil {
-			answer["images"] = media
-		}
-	}
-	question["answers"], err = json.Marshal(answers)
-	if err != nil {
-		return fmt.Errorf("编码第 %d 个黑板墙问题的回答失败：%w", index, err)
-	}
-	return nil
+	job := &assetJob{remoteURL: remoteURL, directory: directory, prefix: prefix}
+	s.jobs = append(s.jobs, job)
+	s.index[remoteURL] = job
+	return job
 }
 
-func (s *assetStore) profile(ctx context.Context, profile map[string]json.RawMessage) error {
+func (s *assetStore) schedule(job *assetJob, apply func(relative string)) {
+	s.applies = append(s.applies, pendingApply{job: job, apply: apply})
+}
+
+// collectProfileFields 收集 profile 中头像和挂件的任务；返回是否有改动。
+// 任务应用后直接原地写回 map。
+func (s *assetStore) collectProfileFields(profile map[string]json.RawMessage) bool {
 	if profile == nil {
-		return nil
+		return false
 	}
+	changed := false
 	for _, key := range []string{"avatar", "accessory"} {
 		url := rawString(profile, key)
-		if url == "" || !strings.HasPrefix(url, "http") {
+		if !isRemoteURL(url) {
 			continue
 		}
 		prefix := key
 		if id := rawString(profile, "id"); id != "" {
 			prefix = id + "-" + key
 		}
-		relative, err := s.download(ctx, url, filepath.Join("assets", "images", "avatar"), prefix)
-		if err != nil {
-			return err
-		}
-		profile[key] = json.RawMessage(strconvQuote(relative))
+		job := s.addJob(url, filepath.Join("assets", "images", "avatar"), prefix)
+		s.schedule(job, func(relative string) { profile[key] = strconvQuote(relative) })
+		changed = true
 	}
-	return nil
+	return changed
 }
 
-func (s *assetStore) mediaList(ctx context.Context, raw json.RawMessage, directory, prefix string) (json.RawMessage, error) {
+func (s *assetStore) collectProfile(profile map[string]json.RawMessage) {
+	s.collectProfileFields(profile)
+}
+
+// collectMedia 收集一个 images 数组中的远程资源任务，返回写回函数（未改动时返回 nil）。
+func (s *assetStore) collectMedia(raw json.RawMessage, directory, prefix string) func() json.RawMessage {
 	var media []map[string]json.RawMessage
 	if json.Unmarshal(raw, &media) != nil {
-		return nil, nil
+		return nil
 	}
+	changed := false
 	for index, item := range media {
 		url := rawString(item, "url")
-		if url == "" || !strings.HasPrefix(url, "http") {
+		if !isRemoteURL(url) {
 			continue
 		}
-		kind := rawString(item, "type")
 		itemDirectory := directory
-		if kind == "audio" {
+		if rawString(item, "type") == "audio" {
 			itemDirectory = filepath.Join("assets", "audio")
 		}
-		relative, err := s.download(ctx, url, itemDirectory, fmt.Sprintf("%s-%d", prefix, index))
+		job := s.addJob(url, itemDirectory, fmt.Sprintf("%s-%d", prefix, index))
+		target := item
+		s.schedule(job, func(relative string) { target["url"] = strconvQuote(relative) })
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return func() json.RawMessage {
+		encoded, err := json.Marshal(media)
 		if err != nil {
-			return nil, err
+			return raw
 		}
-		item["url"] = json.RawMessage(strconvQuote(relative))
-		media[index] = item
+		return encoded
 	}
-	encoded, err := json.Marshal(media)
-	if err != nil {
-		return nil, fmt.Errorf("编码媒体资源失败：%w", err)
-	}
-	return encoded, nil
 }
 
-func (s *assetStore) comments(ctx context.Context, raw json.RawMessage, index int) (json.RawMessage, error) {
+// collectComments 收集评论用户头像任务，返回写回函数（未改动时返回 nil）。
+func (s *assetStore) collectComments(raw json.RawMessage) func() json.RawMessage {
 	var comments []map[string]json.RawMessage
 	if json.Unmarshal(raw, &comments) != nil {
-		return nil, nil
+		return nil
 	}
-	for commentIndex, comment := range comments {
-		for _, userKey := range []string{"user", "to_user"} {
-			user := rawObject(comment[userKey])
-			if err := s.profile(ctx, user); err != nil {
-				return nil, fmt.Errorf("下载第 %d 条动态评论用户资源失败：%w", index, err)
-			}
-			encoded, _ := json.Marshal(user)
-			comment[userKey] = encoded
+	var commentSavers []func()
+	collectUser := func(holder map[string]json.RawMessage, key string) {
+		user := rawObject(holder[key])
+		if len(user) == 0 {
+			return
 		}
+		avatar := rawString(user, "avatar")
+		if !isRemoteURL(avatar) {
+			return
+		}
+		prefix := "avatar"
+		if id := rawString(user, "id"); id != "" {
+			prefix = id + "-avatar"
+		}
+		job := s.addJob(avatar, filepath.Join("assets", "images", "avatar"), prefix)
+		s.schedule(job, func(relative string) { user["avatar"] = strconvQuote(relative) })
+		commentSavers = append(commentSavers, func() { holder[key], _ = json.Marshal(user) })
+	}
+	for _, comment := range comments {
+		collectUser(comment, "user")
+		collectUser(comment, "to_user")
 		toComment := rawObject(comment["to_comment"])
-		toCommentUser := rawObject(toComment["user"])
-		if err := s.profile(ctx, toCommentUser); err != nil {
-			return nil, fmt.Errorf("下载第 %d 条动态评论回复用户资源失败：%w", index, err)
+		if len(toComment) > 0 {
+			collectUser(toComment, "user")
+			commentSavers = append(commentSavers, func() { comment["to_comment"], _ = json.Marshal(toComment) })
 		}
-		if len(toCommentUser) > 0 {
-			toComment["user"], _ = json.Marshal(toCommentUser)
-			comment["to_comment"], _ = json.Marshal(toComment)
+	}
+	if len(commentSavers) == 0 {
+		return nil
+	}
+	return func() json.RawMessage {
+		for _, save := range commentSavers {
+			save()
 		}
-		comments[commentIndex] = comment
+		encoded, err := json.Marshal(comments)
+		if err != nil {
+			return raw
+		}
+		return encoded
 	}
-	encoded, err := json.Marshal(comments)
-	if err != nil {
-		return nil, fmt.Errorf("编码第 %d 条动态评论资源失败：%w", index, err)
-	}
-	return encoded, nil
 }
 
-func (s *assetStore) download(ctx context.Context, remoteURL, directory, prefix string) (string, error) {
-	if relative, ok := s.cache[remoteURL]; ok {
-		return relative, nil
+// downloadAll 并行下载全部任务；首个错误会取消其余任务。
+func (s *assetStore) downloadAll(ctx context.Context, concurrency int) error {
+	if len(s.jobs) == 0 {
+		return nil
 	}
-	data, contentType, err := s.client.Download(ctx, remoteURL, s.headers)
+	if concurrency < 1 {
+		concurrency = 1
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		mu       sync.Mutex
+		firstErr error
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, concurrency)
+	)
+	fail := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+		cancel()
+	}
+jobsLoop:
+	for _, job := range s.jobs {
+		select {
+		case <-ctx.Done():
+			break jobsLoop
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(job *assetJob) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			relative, err := s.download(ctx, job)
+			if err != nil {
+				fail(err)
+				return
+			}
+			job.relative = relative
+			s.progressf("已下载 %d/%d 个资源：%s", s.downloaded.Add(1), len(s.jobs), relative)
+		}(job)
+	}
+	wg.Wait()
+	return firstErr
+}
+
+func (s *assetStore) download(ctx context.Context, job *assetJob) (string, error) {
+	data, contentType, err := s.client.Download(ctx, job.remoteURL, s.headers)
 	if err != nil {
 		return "", err
 	}
-	extension := resourceExtension(remoteURL, contentType)
-	filename := filepath.Join(directory, prefix+extension)
+	extension := resourceExtension(job.remoteURL, contentType)
+	filename := filepath.Join(job.directory, job.prefix+extension)
 	absolute := filepath.Join(s.root, filename)
 	if err := os.MkdirAll(filepath.Dir(absolute), 0o700); err != nil {
 		return "", fmt.Errorf("创建资源目录失败：%w", err)
 	}
 	if err := os.WriteFile(absolute, data, 0o600); err != nil {
-		return "", fmt.Errorf("保存资源 %s 失败：%w", remoteURL, err)
+		return "", fmt.Errorf("保存资源 %s 失败：%w", job.remoteURL, err)
 	}
-	relative := filepath.ToSlash(filename)
-	s.cache[remoteURL] = relative
-	s.downloads++
-	s.progressf("已下载 %d 个资源：%s", s.downloads, relative)
-	return relative, nil
+	return filepath.ToSlash(filename), nil
+}
+
+func isRemoteURL(value string) bool {
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
 }
 
 func resourceExtension(remoteURL, contentType string) string {

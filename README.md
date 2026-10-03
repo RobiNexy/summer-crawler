@@ -15,6 +15,12 @@ go build -o summer_crawl .
 ./summer_crawl 'your-api-key' -sample 3
 ```
 
+调整并行度（默认 4，好友详细资料与资源下载会并行执行）：
+
+```bash
+./summer_crawl 'your-api-key' -concurrency 8
+```
+
 启动后会交互询问是否保留黑板墙动态和好友信息。默认输出到 `summer_crawl_output/`，也可以指定目录：
 
 ```bash
@@ -34,6 +40,6 @@ go build -o summer_crawl .
 - `question_boards.json`：自己发布过的黑板墙问题及回答。
 - `album.html`：可直接打开的离线 HTML 相册。
 
-相册包含年份导航、两列动态卡片、图片灯箱、评论区、录音播放器、好友勋章墙和个人资料页。下载的资源位于 `assets/images/avatar/`、`assets/images/memories/` 和 `assets/audio/`，不依赖网络加载 JavaScript 框架。
+相册包含年份导航、两列动态卡片、图片灯箱、评论区、录音播放器、好友勋章墙和个人资料页。下载的资源位于 `assets/images/avatar/`、`assets/images/memories/`、`assets/images/questions/` 和 `assets/audio/`，不依赖网络加载 JavaScript 框架。
 
-所有 API 请求和资源下载之间会加入 0.5 至 1.5 秒随机等待；失败重试仍会遵守等待策略。
+列表接口每次请求 100 条（动态为 200 条），分页大小会自动适配服务端上限。所有 API 请求和资源下载之间会加入 0.1 至 0.3 秒随机等待；好友详细资料与资源下载默认以 4 个并发执行，可用 `-concurrency` 调整。

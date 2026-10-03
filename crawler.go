@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 const defaultBaseURL = "https://imsummer.cn/api/v9"
@@ -33,14 +35,15 @@ func (c *Crawler) progressf(format string, args ...any) {
 	}
 }
 
-// FetchMemories 返回所有动态分页结果，并在遇到首个空分页时停止。
+// FetchMemories 返回所有动态分页结果，并在列表末尾停止。
 // API 或解码出错时会返回错误，不会返回不完整结果。
 func (c *Crawler) FetchMemories(ctx context.Context) ([]json.RawMessage, error) {
 	if c.ActivityLimit < 1 {
 		return nil, fmt.Errorf("每页动态数量必须大于 0")
 	}
 	var all []json.RawMessage
-	for offset := 0; ; offset += c.ActivityLimit {
+	largest := 0
+	for offset := 0; ; {
 		endpoint, err := c.endpoint("user/activities")
 		if err != nil {
 			return nil, err
@@ -58,9 +61,16 @@ func (c *Crawler) FetchMemories(ctx context.Context) ([]json.RawMessage, error) 
 			return all, nil
 		}
 		all = append(all, page...)
+		offset += len(page)
 		c.progressf("已获取 %d 条动态", len(all))
+		if len(page) > largest {
+			largest = len(page)
+		}
 		if c.MaxActivities > 0 && len(all) >= c.MaxActivities {
 			return all[:c.MaxActivities], nil
+		}
+		if len(page) < largest {
+			return all, nil
 		}
 	}
 }
@@ -181,9 +191,10 @@ func (c *Crawler) EnrichMemories(ctx context.Context, memories []json.RawMessage
 }
 
 func (c *Crawler) fetchPaged(ctx context.Context, path, label string) ([]json.RawMessage, error) {
-	const pageSize = 20
+	const pageSize = 100
 	var all []json.RawMessage
-	for offset := 0; ; offset += pageSize {
+	largest := 0
+	for offset := 0; ; {
 		endpoint, err := c.endpoint(path)
 		if err != nil {
 			return nil, err
@@ -200,21 +211,26 @@ func (c *Crawler) fetchPaged(ctx context.Context, path, label string) ([]json.Ra
 			return all, nil
 		}
 		all = append(all, page...)
+		offset += len(page)
 		c.progressf("已获取 %d 条%s", len(all), label)
+		if len(page) > largest {
+			largest = len(page)
+		}
 		if c.MaxActivities > 0 && len(all) >= c.MaxActivities {
 			return all[:c.MaxActivities], nil
 		}
-		if len(page) < pageSize {
+		if len(page) < largest {
 			return all, nil
 		}
 	}
 }
 
-// FetchFriends 返回好友关系条目，并将每位好友的资料放入其 "info" 字段。
+// FetchFriends 返回好友列表条目。
 func (c *Crawler) FetchFriends(ctx context.Context) ([]map[string]json.RawMessage, error) {
-	const pageSize = 20
+	const pageSize = 100
 	var friends []map[string]json.RawMessage
-	for offset := 0; ; offset += pageSize {
+	largest := 0
+	for offset := 0; ; {
 		endpoint, err := c.endpoint("user/friends")
 		if err != nil {
 			return nil, err
@@ -232,11 +248,15 @@ func (c *Crawler) FetchFriends(ctx context.Context) ([]map[string]json.RawMessag
 			return friends, nil
 		}
 		friends = append(friends, page...)
+		offset += len(page)
 		c.progressf("已获取 %d 位好友", len(friends))
+		if len(page) > largest {
+			largest = len(page)
+		}
 		if c.MaxActivities > 0 && len(friends) >= c.MaxActivities {
 			return friends[:c.MaxActivities], nil
 		}
-		if len(page) < pageSize {
+		if len(page) < largest {
 			return friends, nil
 		}
 	}
@@ -255,24 +275,63 @@ func (c *Crawler) FetchFriendProfile(ctx context.Context, userID string) (map[st
 	return profile, nil
 }
 
-// EnrichFriendProfiles 用详情接口补齐每位好友的资料，并写入 info 字段。
-func (c *Crawler) EnrichFriendProfiles(ctx context.Context, friends []map[string]json.RawMessage) error {
-	for index, friend := range friends {
-		c.progressf("抓取好友资料 %d/%d", index+1, len(friends))
-		id, err := rawID(friend["id"])
-		if err != nil {
-			return fmt.Errorf("第 %d 位好友：%w", index, err)
-		}
-		profile, err := c.FetchFriendProfile(ctx, id)
-		if err != nil {
-			return err
-		}
-		friend["info"], err = json.Marshal(profile)
-		if err != nil {
-			return fmt.Errorf("编码好友 %s 的资料失败：%w", id, err)
-		}
+// EnrichFriendProfiles 并行用详情接口补齐每位好友的资料，并写入 info 字段。
+// concurrency 限制同时进行的请求数；首个错误会取消其余任务。
+func (c *Crawler) EnrichFriendProfiles(ctx context.Context, friends []map[string]json.RawMessage, concurrency int) error {
+	if concurrency < 1 {
+		concurrency = 1
 	}
-	return nil
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		mu       sync.Mutex
+		firstErr error
+		done     atomic.Int64
+		wg       sync.WaitGroup
+		sem      = make(chan struct{}, concurrency)
+	)
+	fail := func(err error) {
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		mu.Unlock()
+		cancel()
+	}
+friendsLoop:
+	for index, friend := range friends {
+		select {
+		case <-ctx.Done():
+			break friendsLoop
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(index int, friend map[string]json.RawMessage) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := ctx.Err(); err != nil {
+				return
+			}
+			id, err := rawID(friend["id"])
+			if err != nil {
+				fail(fmt.Errorf("第 %d 位好友：%w", index, err))
+				return
+			}
+			profile, err := c.FetchFriendProfile(ctx, id)
+			if err != nil {
+				fail(err)
+				return
+			}
+			friend["info"], err = json.Marshal(profile)
+			if err != nil {
+				fail(fmt.Errorf("编码好友 %s 的资料失败：%w", id, err))
+				return
+			}
+			c.progressf("抓取好友资料 %d/%d", done.Add(1), len(friends))
+		}(index, friend)
+	}
+	wg.Wait()
+	return firstErr
 }
 
 func (c *Crawler) endpoint(path string) (*url.URL, error) {

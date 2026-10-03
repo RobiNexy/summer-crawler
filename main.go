@@ -11,14 +11,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
 const defaultOutputDir = "summer_crawl_output"
 
 const (
-	requestDelayMin = 500 * time.Millisecond
-	requestDelayMax = 1500 * time.Millisecond
+	requestDelayMin = 100 * time.Millisecond
+	requestDelayMax = 300 * time.Millisecond
 )
 
 func main() {
@@ -30,10 +31,10 @@ func main() {
 
 func runCLI(args []string, input io.Reader, output io.Writer) error {
 	if len(args) < 1 || strings.TrimSpace(args[0]) == "" {
-		return fmt.Errorf("用法：./summer_crawl apikey [-output-dir 输出目录]")
+		return fmt.Errorf("用法：./summer_crawl apikey [-sample 数量] [-concurrency 并行数] [-output-dir 输出目录]")
 	}
 	authorization := args[0]
-	outputDir, sample, err := parseCLIOptions(args[1:])
+	outputDir, sample, concurrency, err := parseCLIOptions(args[1:])
 	if err != nil {
 		return err
 	}
@@ -117,13 +118,13 @@ func runCLI(args []string, input io.Reader, output io.Writer) error {
 			return err
 		}
 		fmt.Fprintln(output, "抓取好友详细资料……")
-		if err := crawler.EnrichFriendProfiles(context.Background(), friends); err != nil {
+		if err := crawler.EnrichFriendProfiles(context.Background(), friends, concurrency); err != nil {
 			return err
 		}
 		printer.end()
 	}
 	fmt.Fprintln(output, "下载头像、图片和录音……")
-	if err := DownloadAlbumAssets(context.Background(), client, crawler.Headers, outputDir, printer.step, profile, questions, memories, friends); err != nil {
+	if err := DownloadAlbumAssets(context.Background(), client, crawler.Headers, outputDir, printer.step, concurrency, profile, questions, memories, friends); err != nil {
 		return err
 	}
 	printer.end()
@@ -185,30 +186,39 @@ func runCLI(args []string, input io.Reader, output io.Writer) error {
 	return nil
 }
 
-func parseCLIOptions(args []string) (string, int, error) {
+func parseCLIOptions(args []string) (string, int, int, error) {
 	outputDir := defaultOutputDir
 	sample := 0
+	concurrency := 4
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
 		case "-output-dir":
 			if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-				return "", 0, fmt.Errorf("-output-dir 后必须提供目录")
+				return "", 0, 0, fmt.Errorf("-output-dir 后必须提供目录")
 			}
 			outputDir = args[index+1]
 			index++
 		case "-sample":
 			if index+1 >= len(args) {
-				return "", 0, fmt.Errorf("-sample 后必须提供正整数")
+				return "", 0, 0, fmt.Errorf("-sample 后必须提供正整数")
 			}
 			if _, err := fmt.Sscanf(args[index+1], "%d", &sample); err != nil || sample < 1 {
-				return "", 0, fmt.Errorf("-sample 后必须提供正整数")
+				return "", 0, 0, fmt.Errorf("-sample 后必须提供正整数")
+			}
+			index++
+		case "-concurrency":
+			if index+1 >= len(args) {
+				return "", 0, 0, fmt.Errorf("-concurrency 后必须提供正整数")
+			}
+			if _, err := fmt.Sscanf(args[index+1], "%d", &concurrency); err != nil || concurrency < 1 || concurrency > 64 {
+				return "", 0, 0, fmt.Errorf("-concurrency 后必须提供 1 到 64 的整数")
 			}
 			index++
 		default:
-			return "", 0, fmt.Errorf("未知参数 %s；用法：./summer_crawl apikey [-sample 数量] [-output-dir 输出目录]", args[index])
+			return "", 0, 0, fmt.Errorf("未知参数 %s；用法：./summer_crawl apikey [-sample 数量] [-concurrency 并行数] [-output-dir 输出目录]", args[index])
 		}
 	}
-	return outputDir, sample, nil
+	return outputDir, sample, concurrency, nil
 }
 
 func askYesNo(input *bufio.Reader, output io.Writer, question string, defaultValue bool) (bool, error) {
@@ -243,8 +253,10 @@ func writeJSON(path string, value any) error {
 }
 
 // progressPrinter 在终端中用单行滚动刷新进度；非终端输出时退化为逐行打印。
+// 并行任务会并发调用，内部加锁保证输出不串行交错。
 type progressPrinter struct {
 	w     io.Writer
+	mu    sync.Mutex
 	isTTY bool
 }
 
@@ -259,6 +271,8 @@ func newProgressPrinter(w io.Writer) *progressPrinter {
 }
 
 func (p *progressPrinter) step(format string, args ...any) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.isTTY {
 		fmt.Fprintf(p.w, "\r\033[K"+format, args...)
 		return
@@ -267,6 +281,8 @@ func (p *progressPrinter) step(format string, args ...any) {
 }
 
 func (p *progressPrinter) end() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.isTTY {
 		fmt.Fprint(p.w, "\r\033[K")
 	}
