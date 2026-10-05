@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,8 @@ import (
 	"net/http"
 	"time"
 )
+
+var errRequestExhausted = errors.New("请求重试耗尽")
 
 // HTTPClient 用有限次数的重试发送 JSON 请求。
 // 只有服务器返回 2xx 状态码且响应内容为有效 JSON 时，请求才算成功；
@@ -59,6 +62,9 @@ func (c *HTTPClient) SetRandomDelay(minimum, maximum time.Duration) {
 }
 
 func (c *HTTPClient) wait(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	delay := c.RandomDelayMin
 	if c.RandomDelayMax > c.RandomDelayMin {
 		delay += time.Duration(rand.Int63n(int64(c.RandomDelayMax - c.RandomDelayMin + 1)))
@@ -104,22 +110,21 @@ func (c *HTTPClient) GetJSON(ctx context.Context, url string, headers http.Heade
 		lastErr = err
 		c.Logger.Printf("GET 请求 %s 第 %d/%d 次尝试失败：%v", url, attempt, c.Retries, err)
 		if attempt < c.Retries {
-			timer := time.NewTimer(c.Delay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return ctx.Err()
-			case <-timer.C:
+			if err := c.waitBeforeRetry(ctx, attempt); err != nil {
+				return err
 			}
 		}
 	}
-	return fmt.Errorf("GET 请求 %s 在尝试 %d 次后仍失败：%w", url, c.Retries, lastErr)
+	return fmt.Errorf("%w：GET 请求 %s 在尝试 %d 次后仍失败：%w", errRequestExhausted, url, c.Retries, lastErr)
 }
 
 // Download 获取二进制资源，用于保存头像、图片和录音。
 func (c *HTTPClient) Download(ctx context.Context, url string, headers http.Header) ([]byte, string, error) {
 	var lastErr error
 	for attempt := 1; attempt <= c.Retries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
 		if err := c.wait(ctx); err != nil {
 			return nil, "", err
 		}
@@ -145,10 +150,12 @@ func (c *HTTPClient) Download(ctx context.Context, url string, headers http.Head
 		lastErr = err
 		c.Logger.Printf("下载资源 %s 第 %d/%d 次尝试失败：%v", url, attempt, c.Retries, err)
 		if attempt < c.Retries {
-			time.Sleep(c.Delay)
+			if err := c.waitBeforeRetry(ctx, attempt); err != nil {
+				return nil, "", err
+			}
 		}
 	}
-	return nil, "", fmt.Errorf("下载资源 %s 在尝试 %d 次后仍失败：%w", url, c.Retries, lastErr)
+	return nil, "", fmt.Errorf("%w：下载资源 %s 在尝试 %d 次后仍失败：%w", errRequestExhausted, url, c.Retries, lastErr)
 }
 
 func decodeResponse(response *http.Response, out any) error {
@@ -161,4 +168,30 @@ func decodeResponse(response *http.Response, out any) error {
 		return fmt.Errorf("解码 JSON 响应失败：%w", err)
 	}
 	return nil
+}
+
+func (c *HTTPClient) waitBeforeRetry(ctx context.Context, failedAttempt int) error {
+	delay := c.retryDelay(failedAttempt)
+	if delay <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (c *HTTPClient) retryDelay(failedAttempt int) time.Duration {
+	delay := c.Delay
+	for i := 1; i < failedAttempt && delay > 0; i++ {
+		if delay > time.Duration(1<<63-1)/2 {
+			return time.Duration(1<<63 - 1)
+		}
+		delay *= 2
+	}
+	return delay
 }

@@ -31,29 +31,31 @@ func main() {
 
 func runCLI(args []string, input io.Reader, output io.Writer) error {
 	if len(args) < 1 || strings.TrimSpace(args[0]) == "" {
-		return fmt.Errorf("用法：./summer_crawl apikey [-sample 数量] [-concurrency 并行数] [-output-dir 输出目录]")
+		return fmt.Errorf("用法：./summer_crawl apikey [-user 用户ID] [-sample 数量] [-concurrency 并行数] [-output-dir 输出目录]")
 	}
 	authorization := args[0]
-	outputDir, sample, concurrency, err := parseCLIOptions(args[1:])
+	outputDir, sample, concurrency, userID, err := parseCLIOptions(args[1:])
 	if err != nil {
 		return err
 	}
-
-	reader := bufio.NewReader(input)
-	keepBlackboard, err := askYesNo(reader, output, "是否保留黑板墙动态？", true)
-	if err != nil {
-		return err
-	}
-	keepFriends, err := askYesNo(reader, output, "是否保留好友信息？", true)
-	if err != nil {
-		return err
+	var keepBlackboard, keepFriends bool
+	if userID == "" {
+		reader := bufio.NewReader(input)
+		keepBlackboard, err = askYesNo(reader, output, "是否保留黑板墙动态？", true)
+		if err != nil {
+			return err
+		}
+		keepFriends, err = askYesNo(reader, output, "是否保留好友信息？", true)
+		if err != nil {
+			return err
+		}
 	}
 
 	if err := os.MkdirAll(outputDir, 0o700); err != nil {
 		return fmt.Errorf("创建输出目录失败：%w", err)
 	}
 	capturedAt := time.Now().UTC()
-	client, err := NewHTTPClient(20*time.Second, 5, 3*time.Second, log.New(output, "", log.LstdFlags))
+	client, err := NewHTTPClient(20*time.Second, 5, 5*time.Second, log.New(output, "", log.LstdFlags))
 	if err != nil {
 		return err
 	}
@@ -70,6 +72,20 @@ func runCLI(args []string, input io.Reader, output io.Writer) error {
 			"User-Agent":      []string{"okhttp/4.12.0"},
 			"Accept-Encoding": []string{"gzip"},
 		},
+	}
+	if userID != "" {
+		fmt.Fprintf(output, "抓取用户 %s 的动态……\n", userID)
+		memories, err := crawler.FetchUserMemories(context.Background(), userID)
+		printer.end()
+		if err != nil {
+			return err
+		}
+		const outputFilename = "user_memories_for_llm.txt"
+		if err := WriteUserMemoriesText(filepath.Join(outputDir, outputFilename), userID, memories); err != nil {
+			return err
+		}
+		fmt.Fprintf(output, "完成：%d 条动态，文本文件：%s\n", len(memories), filepath.Join(outputDir, outputFilename))
+		return nil
 	}
 
 	fmt.Fprintln(output, "抓取个人资料……")
@@ -186,39 +202,49 @@ func runCLI(args []string, input io.Reader, output io.Writer) error {
 	return nil
 }
 
-func parseCLIOptions(args []string) (string, int, int, error) {
+func parseCLIOptions(args []string) (string, int, int, string, error) {
 	outputDir := defaultOutputDir
 	sample := 0
 	concurrency := 4
+	userID := ""
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
 		case "-output-dir":
 			if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-				return "", 0, 0, fmt.Errorf("-output-dir 后必须提供目录")
+				return "", 0, 0, "", fmt.Errorf("-output-dir 后必须提供目录")
 			}
 			outputDir = args[index+1]
 			index++
 		case "-sample":
 			if index+1 >= len(args) {
-				return "", 0, 0, fmt.Errorf("-sample 后必须提供正整数")
+				return "", 0, 0, "", fmt.Errorf("-sample 后必须提供正整数")
 			}
 			if _, err := fmt.Sscanf(args[index+1], "%d", &sample); err != nil || sample < 1 {
-				return "", 0, 0, fmt.Errorf("-sample 后必须提供正整数")
+				return "", 0, 0, "", fmt.Errorf("-sample 后必须提供正整数")
 			}
 			index++
 		case "-concurrency":
 			if index+1 >= len(args) {
-				return "", 0, 0, fmt.Errorf("-concurrency 后必须提供正整数")
+				return "", 0, 0, "", fmt.Errorf("-concurrency 后必须提供正整数")
 			}
 			if _, err := fmt.Sscanf(args[index+1], "%d", &concurrency); err != nil || concurrency < 1 || concurrency > 64 {
-				return "", 0, 0, fmt.Errorf("-concurrency 后必须提供 1 到 64 的整数")
+				return "", 0, 0, "", fmt.Errorf("-concurrency 后必须提供 1 到 64 的整数")
 			}
 			index++
+		case "-user":
+			if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
+				return "", 0, 0, "", fmt.Errorf("-user 后必须提供用户 ID")
+			}
+			userID = strings.TrimSpace(args[index+1])
+			index++
 		default:
-			return "", 0, 0, fmt.Errorf("未知参数 %s；用法：./summer_crawl apikey [-sample 数量] [-concurrency 并行数] [-output-dir 输出目录]", args[index])
+			return "", 0, 0, "", fmt.Errorf("未知参数 %s；用法：./summer_crawl apikey [-user 用户ID] [-sample 数量] [-concurrency 并行数] [-output-dir 输出目录]", args[index])
 		}
 	}
-	return outputDir, sample, concurrency, nil
+	if userID != "" && sample > 0 {
+		return "", 0, 0, "", fmt.Errorf("-user 会抓取全部动态，不能与 -sample 同时使用")
+	}
+	return outputDir, sample, concurrency, userID, nil
 }
 
 func askYesNo(input *bufio.Reader, output io.Writer, question string, defaultValue bool) (bool, error) {

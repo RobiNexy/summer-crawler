@@ -23,6 +23,14 @@ go build -o summer_crawl .
 ./summer_crawl 'your-api-key' -concurrency 8
 ```
 
+只抓取指定好友的全部动态，并生成供 LLM 使用的纯文本（不获取评论、黑板墙问答、好友或个人资料，也不下载媒体）：
+
+```bash
+./summer_crawl 'your-api-key' -user '好友用户ID' -output-dir ./user-data
+```
+
+该模式仅生成 `user_memories_for_llm.txt`；`-user` 与 `-sample` 不能同时使用。
+
 启动后会交互询问是否保留黑板墙动态和好友信息。默认输出到 `summer_crawl_output/`，也可以指定目录：
 
 ```bash
@@ -44,7 +52,7 @@ go build -o summer_crawl .
 
 相册包含年份导航、两列动态卡片、图片灯箱、评论区、录音播放器、好友勋章墙和个人资料页。下载的资源位于 `assets/images/avatar/`、`assets/images/memories/`、`assets/images/questions/` 和 `assets/audio/`，不依赖网络加载 JavaScript 框架。
 
-列表接口每次请求 100 条（动态为 200 条），分页大小会自动适配服务端上限。所有 API 请求和资源下载之间会加入 0.1 至 0.3 秒随机等待；好友详细资料与资源下载默认以 4 个并发执行，可用 `-concurrency` 调整。
+列表接口每次请求 100 条（动态为 200 条），分页大小会自动适配服务端上限。所有 API 请求和资源下载之间会加入 0.1 至 0.3 秒随机等待；失败重试采用 5、10、20、40 秒指数退避。重试耗尽时会保留已抓取的列表数据、跳过缺失的好友补充资料/评论/回答或资源，并使用空资料默认值继续生成归档。好友详细资料与资源下载默认以 4 个并发执行，可用 `-concurrency` 调整。
 
 ## 抓包获取 key
 

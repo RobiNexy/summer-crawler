@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
@@ -144,7 +145,9 @@ func DownloadAlbumAssets(ctx context.Context, client *HTTPClient, headers http.H
 		return err
 	}
 	for _, pending := range store.applies {
-		pending.apply(pending.job.relative)
+		if pending.job.relative != "" {
+			pending.apply(pending.job.relative)
+		}
 	}
 	for _, finalize := range store.finalizers {
 		finalize()
@@ -311,6 +314,10 @@ jobsLoop:
 			defer func() { <-sem }()
 			relative, err := s.download(ctx, job)
 			if err != nil {
+				if errors.Is(err, errRequestExhausted) {
+					s.progressf("跳过下载失败的资源：%s", job.remoteURL)
+					return
+				}
 				fail(err)
 				return
 			}

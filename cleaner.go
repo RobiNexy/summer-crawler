@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // CleanMemories 将原始动态按类型拆分，并提炼出适合后续使用的字段。
@@ -151,6 +152,33 @@ func WriteMemoriesMarkdown(path string, memories []map[string]json.RawMessage) e
 	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("写入 Markdown 文件 %s 失败：%w", path, err)
+	}
+	return nil
+}
+
+// WriteUserMemoriesText 将指定用户的动态写入不含媒体资源的纯文本文件。
+func WriteUserMemoriesText(path, userID string, memories []json.RawMessage) error {
+	var data strings.Builder
+	fmt.Fprintf(&data, "用户 %s 的动态\n共 %d 条\n\n", userID, len(memories))
+	for index, rawMemory := range memories {
+		var memory map[string]json.RawMessage
+		if err := json.Unmarshal(rawMemory, &memory); err != nil {
+			return fmt.Errorf("解析第 %d 条动态失败：%w", index, err)
+		}
+		date := rawString(memory, "created_at")
+		if date == "" {
+			date = rawString(memory, "time")
+		}
+		title := rawString(memory, "title")
+		content := rawString(memory, "content")
+		fmt.Fprintf(&data, "时间：%s\n", date)
+		if title != "" {
+			fmt.Fprintf(&data, "标题：%s\n", title)
+		}
+		fmt.Fprintf(&data, "%s\n\n", content)
+	}
+	if err := os.WriteFile(path, []byte(data.String()), 0o600); err != nil {
+		return fmt.Errorf("写入用户动态文本失败：%w", err)
 	}
 	return nil
 }

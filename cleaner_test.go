@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -43,5 +44,29 @@ func TestWriteMemoriesMarkdown(t *testing.T) {
 	}
 	if string(data) != "## 我在某社交软件上发过的所有动态\n\n### 时间:2025-01-01\n\n正文\n\n" {
 		t.Fatalf("Markdown 内容异常：%s", data)
+	}
+}
+
+func TestWriteUserMemoriesText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "user_memories_for_llm.txt")
+	memories := []json.RawMessage{
+		json.RawMessage(`{"title":"周末","content":"去公园散步","created_at":"2025-01-01","images":[{"url":"https://example.com/image.jpg"}]}`),
+		json.RawMessage(`{"content":"补充动态","time":"2025-01-02"}`),
+	}
+	if err := WriteUserMemoriesText(path, "user-42", memories); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"用户 user-42 的动态", "共 2 条", "标题：周末", "去公园散步", "2025-01-02", "补充动态"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("输出文本缺少 %q：%s", want, text)
+		}
+	}
+	if strings.Contains(text, "example.com") || strings.Contains(text, "图片") {
+		t.Fatalf("纯文本不应包含媒体链接：%s", text)
 	}
 }

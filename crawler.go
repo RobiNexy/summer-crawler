@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -55,6 +56,10 @@ func (c *Crawler) FetchMemories(ctx context.Context) ([]json.RawMessage, error) 
 
 		var page []json.RawMessage
 		if err := c.Client.GetJSON(ctx, endpoint.String(), c.Headers, &page); err != nil {
+			if errors.Is(err, errRequestExhausted) {
+				c.Client.Logger.Printf("跳过偏移量为 %d 的动态页面，保留已获取结果", offset)
+				return all, nil
+			}
 			return nil, fmt.Errorf("获取偏移量为 %d 的动态失败：%w", offset, err)
 		}
 		if len(page) == 0 {
@@ -75,6 +80,43 @@ func (c *Crawler) FetchMemories(ctx context.Context) ([]json.RawMessage, error) 
 	}
 }
 
+// FetchUserMemories 返回指定用户的全部动态，不抓取评论或其他关联数据。
+func (c *Crawler) FetchUserMemories(ctx context.Context, userID string) ([]json.RawMessage, error) {
+	if c.ActivityLimit < 1 {
+		return nil, fmt.Errorf("每页动态数量必须大于 0")
+	}
+	return c.fetchActivityPages(ctx, "users/"+url.PathEscape(userID)+"/activities", "指定用户动态")
+}
+
+func (c *Crawler) fetchActivityPages(ctx context.Context, path, label string) ([]json.RawMessage, error) {
+	var all []json.RawMessage
+	for offset := 0; ; {
+		endpoint, err := c.endpoint(path)
+		if err != nil {
+			return nil, err
+		}
+		query := endpoint.Query()
+		query.Set("limit", strconv.Itoa(c.ActivityLimit))
+		query.Set("offset", strconv.Itoa(offset))
+		endpoint.RawQuery = query.Encode()
+
+		var page []json.RawMessage
+		if err := c.Client.GetJSON(ctx, endpoint.String(), c.Headers, &page); err != nil {
+			if errors.Is(err, errRequestExhausted) {
+				c.Client.Logger.Printf("跳过%s偏移量 %d 的页面，保留已获取结果", label, offset)
+				return all, nil
+			}
+			return nil, fmt.Errorf("获取%s（偏移量 %d）失败：%w", label, offset, err)
+		}
+		if len(page) == 0 {
+			return all, nil
+		}
+		all = append(all, page...)
+		offset += len(page)
+		c.progressf("已获取 %d 条%s", len(all), label)
+	}
+}
+
 // FetchProfile 获取当前用户的完整资料。
 func (c *Crawler) FetchProfile(ctx context.Context) (map[string]json.RawMessage, error) {
 	endpoint, err := c.endpoint("user")
@@ -83,6 +125,10 @@ func (c *Crawler) FetchProfile(ctx context.Context) (map[string]json.RawMessage,
 	}
 	var profile map[string]json.RawMessage
 	if err := c.Client.GetJSON(ctx, endpoint.String(), c.Headers, &profile); err != nil {
+		if errors.Is(err, errRequestExhausted) {
+			c.Client.Logger.Printf("个人资料请求重试耗尽，使用空资料默认值")
+			return map[string]json.RawMessage{}, nil
+		}
 		return nil, fmt.Errorf("获取个人资料失败：%w", err)
 	}
 	return profile, nil
@@ -106,6 +152,10 @@ func (c *Crawler) FetchPaper(ctx context.Context, paperID string) (map[string]js
 	}
 	var paper map[string]json.RawMessage
 	if err := c.Client.GetJSON(ctx, endpoint.String(), c.Headers, &paper); err != nil {
+		if errors.Is(err, errRequestExhausted) {
+			c.Client.Logger.Printf("交友问卷请求重试耗尽，使用空问卷默认值")
+			return map[string]json.RawMessage{}, nil
+		}
 		return nil, fmt.Errorf("获取交友问卷失败：%w", err)
 	}
 	return paper, nil
@@ -126,6 +176,15 @@ func (c *Crawler) EnrichQuestionBoards(ctx context.Context, questions []json.Raw
 		}
 		answers, err := c.FetchQuestionAnswers(ctx, id)
 		if err != nil {
+			if errors.Is(err, errRequestExhausted) {
+				c.Client.Logger.Printf("跳过问题 %s 的回答：请求重试耗尽", id)
+				encoded, marshalErr := json.Marshal(question)
+				if marshalErr != nil {
+					return nil, fmt.Errorf("编码第 %d 个黑板墙问题失败：%w", index, marshalErr)
+				}
+				result = append(result, encoded)
+				continue
+			}
 			return nil, fmt.Errorf("获取问题 %s 的回答失败：%w", id, err)
 		}
 		question["answers"], err = json.Marshal(answers)
@@ -174,11 +233,16 @@ func (c *Crawler) EnrichMemories(ctx context.Context, memories []json.RawMessage
 			c.progressf("抓取评论 %d/%d", fetched, withComments)
 			comments, err := c.FetchActivityComments(ctx, id)
 			if err != nil {
-				return nil, fmt.Errorf("获取动态 %s 的评论失败：%w", id, err)
-			}
-			memory["comments"], err = json.Marshal(comments)
-			if err != nil {
-				return nil, fmt.Errorf("编码动态 %s 的评论失败：%w", id, err)
+				if errors.Is(err, errRequestExhausted) {
+					c.Client.Logger.Printf("跳过动态 %s 的评论：请求重试耗尽", id)
+				} else {
+					return nil, fmt.Errorf("获取动态 %s 的评论失败：%w", id, err)
+				}
+			} else {
+				memory["comments"], err = json.Marshal(comments)
+				if err != nil {
+					return nil, fmt.Errorf("编码动态 %s 的评论失败：%w", id, err)
+				}
 			}
 		}
 		encoded, err := json.Marshal(memory)
@@ -205,6 +269,10 @@ func (c *Crawler) fetchPaged(ctx context.Context, path, label string) ([]json.Ra
 		endpoint.RawQuery = query.Encode()
 		var page []json.RawMessage
 		if err := c.Client.GetJSON(ctx, endpoint.String(), c.Headers, &page); err != nil {
+			if errors.Is(err, errRequestExhausted) {
+				c.Client.Logger.Printf("跳过%s偏移量 %d 的页面，保留已获取结果", label, offset)
+				return all, nil
+			}
 			return nil, fmt.Errorf("获取%s（偏移量 %d）失败：%w", label, offset, err)
 		}
 		if len(page) == 0 {
@@ -242,6 +310,10 @@ func (c *Crawler) FetchFriends(ctx context.Context) ([]map[string]json.RawMessag
 		endpoint.RawQuery = query.Encode()
 		var page []map[string]json.RawMessage
 		if err := c.Client.GetJSON(ctx, endpoint.String(), c.Headers, &page); err != nil {
+			if errors.Is(err, errRequestExhausted) {
+				c.Client.Logger.Printf("跳过偏移量为 %d 的好友页面，保留已获取结果", offset)
+				return friends, nil
+			}
 			return nil, fmt.Errorf("获取好友（偏移量 %d）失败：%w", offset, err)
 		}
 		if len(page) == 0 {
@@ -319,6 +391,11 @@ friendsLoop:
 			}
 			profile, err := c.FetchFriendProfile(ctx, id)
 			if err != nil {
+				if errors.Is(err, errRequestExhausted) {
+					c.Client.Logger.Printf("跳过好友 %s 的详细资料，保留好友列表中的现有信息", id)
+					c.progressf("抓取好友资料 %d/%d", done.Add(1), len(friends))
+					return
+				}
 				fail(err)
 				return
 			}
